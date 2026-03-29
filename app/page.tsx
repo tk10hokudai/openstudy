@@ -1,65 +1,125 @@
-import Image from "next/image";
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+
+type MenuOption = {
+  id: string;
+  label: string;
+  disabled: boolean;
+  badge?: string;
+};
+
+const menuOptions: MenuOption[] = [
+  { id: 'bookmarks', label: '【◇】ブックマークに追加した問題集', disabled: false },
+  { id: 'search', label: '試験・資格を検索して演習する', disabled: false },
+  { id: 'create', label: '任意の問題集を作成する', disabled: true, badge: '【開発中】' },
+  { id: 'practice', label: '作成した問題集を演習する', disabled: true, badge: '【開発中】' },
+];
 
 export default function Home() {
+  const [selected, setSelected] = useState<string | null>(null);
+  const [showAbout, setShowAbout] = useState(false);
+  const [hasBookmarks, setHasBookmarks] = useState(false);
+  const router = useRouter();
+
+  useEffect(() => {
+    const bookmarks = JSON.parse(localStorage.getItem('exam_bookmarks') || '[]');
+    setHasBookmarks(bookmarks.length > 0);
+  }, []);
+
+  const handleNext = () => {
+    if (selected === 'search') {
+      router.push('/search');
+    } else if (selected === 'bookmarks') {
+      router.push('/bookmarks');
+    }
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="page-container">
+      {/* Header */}
+      <header className="header">
+        <Link href="/" className="header-logo">OpenStudy</Link>
+      </header>
+
+      {/* Body */}
+      <div className="page-body">
+        <h1 className="page-title">OpenStudy</h1>
+
+        {/* OpenStudyとは トグル */}
+        <div style={{ marginBottom: '1rem' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.25rem',
+              cursor: 'pointer',
+              color: 'var(--text-light)',
+              fontSize: '0.9rem',
+              userSelect: 'none',
+            }}
+            onClick={() => setShowAbout(!showAbout)}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <span>{showAbout ? '▼' : '▲'}OpenStudyとは</span>
+          </div>
+
+          {showAbout && (
+            <div className="explanation-box" style={{ marginTop: '0.5rem' }}>
+              <p style={{ fontWeight: 600, marginBottom: '0.5rem' }}>OpenStudyとは</p>
+              <p>あらゆる試験・資格の問題演習を行えるサービスです。</p>
+              <p style={{ marginTop: '0.75rem', fontWeight: 600, marginBottom: '0.25rem' }}>UIの見方</p>
+              <p>〇 … 選択肢（タップで選択、◎が選択済み）</p>
+              <p>☆ … お気に入り登録（橙色、演習中に問題を登録）</p>
+              <p>◇ … ブックマーク（緑色、試験・資格を登録）</p>
+              <p>▲▼ … タップで詳細の開閉</p>
+              <p style={{ marginTop: '0.75rem', fontWeight: 600, marginBottom: '0.25rem' }}>使い方</p>
+              <p>1. 演習したい試験・資格を選んで問題を解きます。</p>
+              <p>2. 解答後に正誤判定と解説が表示されます。</p>
+              <p>3. 全問終了後に正答率が表示されます。</p>
+              <p>4. 間違えた問題だけを再演習することもできます。</p>
+            </div>
+          )}
         </div>
-      </main>
+
+        <div className="radio-list">
+          {menuOptions.map((option) => {
+            const isBookmarkEmpty = option.id === 'bookmarks' && !hasBookmarks;
+            const isDisabled = option.disabled || isBookmarkEmpty;
+
+            return (
+              <div
+                key={option.id}
+                className={`radio-option ${selected === option.id ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}`}
+                onClick={() => {
+                  if (!isDisabled) setSelected(option.id);
+                }}
+              >
+                <div className={`radio-circle ${selected === option.id ? 'checked' : ''}`}>
+                  {selected === option.id && <div className="radio-circle-inner" />}
+                </div>
+                <span className="radio-label">
+                  {option.label}
+                  {option.badge && <span className="radio-badge">{option.badge}</span>}
+                  {isBookmarkEmpty && <span className="radio-badge">（登録なし）</span>}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Navigation */}
+      <div className="nav-buttons nav-buttons--right-only">
+        <button
+          className={`btn ${selected ? 'btn-primary' : 'btn-disabled'}`}
+          onClick={handleNext}
+          disabled={!selected}
+        >
+          次へ
+        </button>
+      </div>
     </div>
   );
 }
