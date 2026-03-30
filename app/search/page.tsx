@@ -4,10 +4,13 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { useUser } from '@/lib/auth';
+import { getBookmarks, toggleBookmark } from '@/lib/storage';
 import { Exam } from '@/lib/types';
 
 export default function SearchPage() {
   const router = useRouter();
+  const { user } = useUser();
   const [exams, setExams] = useState<Exam[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -23,42 +26,36 @@ export default function SearchPage() {
         .order('title');
 
       if (!error && data) {
-        setExams(data);
+        const sorted = [...data].sort((a, b) => {
+          const aIsJapanese = /^[\u3000-\u9FFF\uF900-\uFAFF]/.test(a.title);
+          const bIsJapanese = /^[\u3000-\u9FFF\uF900-\uFAFF]/.test(b.title);
+          if (aIsJapanese && !bIsJapanese) return -1;
+          if (!aIsJapanese && bIsJapanese) return 1;
+          return a.title.localeCompare(b.title, 'ja');
+        });
+        setExams(sorted);
       }
       setLoading(false);
     }
     fetchExams();
-
-    // ブックマーク読み込み
-    const saved = JSON.parse(localStorage.getItem('exam_bookmarks') || '[]');
-    setBookmarks(saved);
   }, []);
+
+  useEffect(() => {
+    getBookmarks(user).then(setBookmarks);
+  }, [user]);
 
   const categories = Array.from(new Set(exams.map((e) => e.category)));
 
-  const filtered = exams
-    .filter((e) => {
-      const matchSearch = e.title.toLowerCase().includes(search.toLowerCase());
-      const matchCategory = activeCategory ? e.category === activeCategory : true;
-      return matchSearch && matchCategory;
-    })
-    .sort((a, b) => {
-      const aIsJapanese = /^[\u3000-\u9FFF\uF900-\uFAFF]/.test(a.title);
-      const bIsJapanese = /^[\u3000-\u9FFF\uF900-\uFAFF]/.test(b.title);
-      if (aIsJapanese && !bIsJapanese) return -1;
-      if (!aIsJapanese && bIsJapanese) return 1;
-      return a.title.localeCompare(b.title, 'ja');
-    });
+  const filtered = exams.filter((e) => {
+    const matchSearch = e.title.toLowerCase().includes(search.toLowerCase());
+    const matchCategory = activeCategory ? e.category === activeCategory : true;
+    return matchSearch && matchCategory;
+  });
 
-  const toggleBookmark = (examId: number, e: React.MouseEvent) => {
+  const handleToggleBookmark = async (examId: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    setBookmarks((prev) => {
-      const next = prev.includes(examId)
-        ? prev.filter((id) => id !== examId)
-        : [...prev, examId];
-      localStorage.setItem('exam_bookmarks', JSON.stringify(next));
-      return next;
-    });
+    const next = await toggleBookmark(user, examId);
+    setBookmarks(next);
   };
 
   const handleNext = () => {
@@ -69,18 +66,15 @@ export default function SearchPage() {
 
   return (
     <div className="page-container">
-      {/* Header */}
       <header className="header">
         <Link href="/" className="header-logo">OpenStudy</Link>
       </header>
 
-      {/* Body */}
       <div className="page-body">
         <h2 className="section-title" style={{ textAlign: 'center', fontSize: '1.1rem', marginBottom: '1rem' }}>
           試験・資格を検索
         </h2>
 
-        {/* 検索ボックス */}
         <input
           type="text"
           className="search-input"
@@ -89,7 +83,6 @@ export default function SearchPage() {
           onChange={(e) => setSearch(e.target.value)}
         />
 
-        {/* 分類フィルター */}
         <div className="category-filter">
           <button
             className={`category-chip ${activeCategory === null ? 'active' : ''}`}
@@ -108,15 +101,10 @@ export default function SearchPage() {
           ))}
         </div>
 
-        {/* 試験・資格一覧 */}
         {loading ? (
-          <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem 0' }}>
-            読み込み中...
-          </p>
+          <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem 0' }}>読み込み中...</p>
         ) : filtered.length === 0 ? (
-          <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem 0' }}>
-            該当する試験が見つかりません
-          </p>
+          <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem 0' }}>該当する試験が見つかりません</p>
         ) : (
           <ul className="exam-list">
             {filtered.map((exam) => (
@@ -130,15 +118,10 @@ export default function SearchPage() {
                 </div>
                 <span style={{ flex: 1 }}>{exam.title}</span>
                 <button
-                  onClick={(e) => toggleBookmark(exam.id, e)}
+                  onClick={(e) => handleToggleBookmark(exam.id, e)}
                   style={{
-                    background: 'none',
-                    border: 'none',
-                    fontSize: '1.25rem',
-                    color: '#16a34a',
-                    cursor: 'pointer',
-                    padding: '0.25rem',
-                    lineHeight: 1,
+                    background: 'none', border: 'none', fontSize: '1.25rem',
+                    color: '#16a34a', cursor: 'pointer', padding: '0.25rem', lineHeight: 1,
                   }}
                 >
                   {bookmarks.includes(exam.id) ? '◆' : '◇'}
@@ -149,11 +132,8 @@ export default function SearchPage() {
         )}
       </div>
 
-      {/* Navigation */}
       <div className="nav-buttons">
-        <button className="btn btn-back" onClick={() => router.back()}>
-          戻る
-        </button>
+        <button className="btn btn-back" onClick={() => router.back()}>戻る</button>
         <button
           className={`btn ${selectedExamId !== null ? 'btn-primary' : 'btn-disabled'}`}
           onClick={handleNext}

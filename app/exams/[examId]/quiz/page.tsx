@@ -4,6 +4,12 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { useUser } from '@/lib/auth';
+import {
+  getFavorites, toggleFavorite as toggleFavoriteStorage,
+  getProgress, saveProgress as saveProgressStorage, clearProgress,
+  saveQuizResult,
+} from '@/lib/storage';
 import { Exam, Question, QuestionGroup, QuizItem } from '@/lib/types';
 
 type Result = {
@@ -18,112 +24,77 @@ export default function QuizPage() {
   const examId = params.examId as string;
   const mode = searchParams.get('mode') || 'normal';
   const sectionId = searchParams.get('sectionId');
+  const { user } = useUser();
 
   const [exam, setExam] = useState<Exam | null>(null);
   const [quizItems, setQuizItems] = useState<QuizItem[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  // 単一問題用の状態
   const [selectedChoiceId, setSelectedChoiceId] = useState<number | null>(null);
   const [selectedChoiceIds, setSelectedChoiceIds] = useState<number[]>([]);
   const [textInput, setTextInput] = useState('');
   const [blanksInput, setBlanksInput] = useState<Record<string, string>>({});
   const [essayInput, setEssayInput] = useState('');
-
-  // グループ問題用の状態
   const [groupAnswers, setGroupAnswers] = useState<Record<number, number | null>>({});
 
-  // 共通状態
   const [answered, setAnswered] = useState(false);
   const [results, setResults] = useState<Result[]>([]);
   const [showExplanation, setShowExplanation] = useState(false);
   const [favorites, setFavorites] = useState<number[]>([]);
-
-  // 正誤判定の結果（単一問題用）
   const [currentCorrect, setCurrentCorrect] = useState(false);
-  // グループ問題用の正誤結果
   const [groupResults, setGroupResults] = useState<Record<number, boolean>>({});
   const [groupCorrectCount, setGroupCorrectCount] = useState(0);
 
   // お気に入り読み込み
   useEffect(() => {
-    const saved = localStorage.getItem(`favorites_${examId}`);
-    if (saved) setFavorites(JSON.parse(saved));
-  }, [examId]);
+    getFavorites(user, examId).then(setFavorites);
+  }, [user, examId]);
 
   // データ取得
   useEffect(() => {
     async function fetchData() {
       const { data: examData } = await supabase
-        .from('exams')
-        .select('*')
-        .eq('id', examId)
-        .single();
+        .from('exams').select('*').eq('id', examId).single();
       if (examData) setExam(examData);
 
-      // セクションID取得
       let sectionIds: number[] = [];
       if (sectionId) {
         sectionIds = await getAllChildSectionIds(Number(sectionId));
         sectionIds.push(Number(sectionId));
       } else {
         const { data: sections } = await supabase
-          .from('exam_sections')
-          .select('id')
-          .eq('exam_id', examId);
+          .from('exam_sections').select('id').eq('exam_id', examId);
         if (sections) sectionIds = sections.map((s) => s.id);
       }
 
-      if (sectionIds.length === 0) {
-        setLoading(false);
-        return;
-      }
+      if (sectionIds.length === 0) { setLoading(false); return; }
 
-      // 独立問題を取得
       const { data: soloQuestions } = await supabase
-        .from('questions')
-        .select('*, choices(*)')
-        .in('section_id', sectionIds)
-        .order('question_number');
-
-      // グループ問題を取得
+        .from('questions').select('*, choices(*)').in('section_id', sectionIds).order('question_number');
       const { data: groups } = await supabase
-        .from('question_groups')
-        .select('*, questions(*, choices(*))')
-        .in('section_id', sectionIds);
+        .from('question_groups').select('*, questions(*, choices(*))').in('section_id', sectionIds);
 
-      // QuizItem に変換
       const items: QuizItem[] = [];
-
-      // 独立問題
       if (soloQuestions) {
-        for (const q of soloQuestions) {
-          items.push({ type: 'single', question: q as Question });
-        }
+        for (const q of soloQuestions) items.push({ type: 'single', question: q as Question });
       }
-
-      // グループ問題
       if (groups) {
         for (const g of groups as QuestionGroup[]) {
-          // グループ内の問題を question_number でソート
           g.questions.sort((a, b) => a.question_number - b.question_number);
           items.push({ type: 'group', group: g });
         }
       }
-
-      // question_number でソート（グループは最初の問題の番号を使う）
       items.sort((a, b) => {
         const numA = a.type === 'single' ? a.question.question_number : a.group.questions[0]?.question_number || 0;
         const numB = b.type === 'single' ? b.question.question_number : b.group.questions[0]?.question_number || 0;
         return numA - numB;
       });
 
-      // モードに応じたフィルタリング
       let filtered = items;
 
       if (mode === 'favorites') {
-        const favs = JSON.parse(localStorage.getItem(`favorites_${examId}`) || '[]') as number[];
+        const favs = await getFavorites(user, examId);
         filtered = items.filter((item) => {
           if (item.type === 'single') return favs.includes(item.question.id);
           return item.group.questions.some((q) => favs.includes(q.id));
@@ -141,46 +112,28 @@ export default function QuizPage() {
       if (mode === 'random') {
         const count = parseInt(searchParams.get('count') || '0', 10);
         if (count > 0 && count < filtered.length) {
-          // シャッフルして先頭 count 件を取得
           const shuffled = [...filtered].sort(() => Math.random() - 0.5);
           filtered = shuffled.slice(0, count);
         }
       }
 
-
-
       if (mode === 'continue') {
-        const saved = localStorage.getItem(`progress_${examId}`);
-        if (saved) {
-          const progress = JSON.parse(saved);
-
-          // 保存された問題IDリストから QuizItem を再構築
+        const progress = await getProgress(user, examId);
+        if (progress) {
           const savedQuestionIds: number[] = progress.questionIds || [];
           const savedGroupIds: number[] = progress.groupIds || [];
 
           if (savedQuestionIds.length > 0 || savedGroupIds.length > 0) {
-            // 保存順序に従って items をフィルタ・並び替え
             const restoredItems: typeof items = [];
-
-            // 独立問題を保存順で追加
             for (const qId of savedQuestionIds) {
-              const found = items.find(
-                (it) => it.type === 'single' && it.question.id === qId
-              );
+              const found = items.find((it) => it.type === 'single' && it.question.id === qId);
               if (found) restoredItems.push(found);
             }
-
-            // グループ問題を保存順で追加
             for (const gId of savedGroupIds) {
-              const found = items.find(
-                (it) => it.type === 'group' && it.group.id === gId
-              );
+              const found = items.find((it) => it.type === 'group' && it.group.id === gId);
               if (found) restoredItems.push(found);
             }
-
-            if (restoredItems.length > 0) {
-              filtered = restoredItems;
-            }
+            if (restoredItems.length > 0) filtered = restoredItems;
           }
 
           setCurrentIndex(progress.currentIndex || 0);
@@ -192,48 +145,36 @@ export default function QuizPage() {
       setLoading(false);
     }
     fetchData();
-  }, [examId, mode, sectionId]);
+  }, [examId, mode, sectionId, user]);
 
   async function getAllChildSectionIds(parentId: number): Promise<number[]> {
     const { data: children } = await supabase
-      .from('exam_sections')
-      .select('id')
-      .eq('parent_section_id', parentId);
+      .from('exam_sections').select('id').eq('parent_section_id', parentId);
     if (!children || children.length === 0) return [];
     const childIds = children.map((c) => c.id);
     const grandchildIds = await Promise.all(childIds.map((id) => getAllChildSectionIds(id)));
     return [...childIds, ...grandchildIds.flat()];
   }
 
-const saveProgress = useCallback(() => {
-    // 出題中の問題IDリスト・グループIDリストを構築
+  const doSaveProgress = useCallback(async () => {
     const questionIds: number[] = [];
     const groupIds: number[] = [];
     for (const item of quizItems) {
-      if (item.type === 'single') {
-        questionIds.push(item.question.id);
-      } else {
-        groupIds.push(item.group.id);
-      }
+      if (item.type === 'single') questionIds.push(item.question.id);
+      else groupIds.push(item.group.id);
     }
+    await saveProgressStorage(user, examId, {
+      mode,
+      sectionId: sectionId || null,
+      questionIds,
+      groupIds,
+      currentIndex,
+      results,
+      totalItems: quizItems.length,
+    });
+  }, [user, examId, mode, sectionId, quizItems, currentIndex, results]);
 
-    localStorage.setItem(
-      `progress_${examId}`,
-      JSON.stringify({
-        mode,
-        sectionId: sectionId || null,
-        questionIds,
-        groupIds,
-        currentIndex,
-        results,
-        totalItems: quizItems.length,
-      })
-    );
-  }, [examId, mode, sectionId, quizItems, currentIndex, results]);
-
-  // ==============================
-  // 回答確定ロジック
-  // ==============================
+  // 回答確定
   const handleAnswer = () => {
     const item = quizItems[currentIndex];
 
@@ -241,7 +182,6 @@ const saveProgress = useCallback(() => {
       const q = item.question;
 
       if (q.question_type === 'essay') {
-        // essay: 自動判定なし、次へで正誤判定画面を表示
         setAnswered(true);
         return;
       }
@@ -275,9 +215,7 @@ const saveProgress = useCallback(() => {
         return;
       }
 
-      // choice / image_choice
       if (q.max_selections >= 2) {
-        // 複数選択
         const correctIds = q.choices.filter((c) => c.is_correct).map((c) => c.id);
         const correct = correctIds.length === selectedChoiceIds.length &&
           correctIds.every((id) => selectedChoiceIds.includes(id));
@@ -285,7 +223,6 @@ const saveProgress = useCallback(() => {
         setResults((prev) => [...prev, { questionId: q.id, correct }]);
         setAnswered(true);
       } else {
-        // 単一選択
         const selectedChoice = q.choices.find((c) => c.id === selectedChoiceId);
         const correct = selectedChoice?.is_correct || false;
         setCurrentCorrect(correct);
@@ -293,7 +230,6 @@ const saveProgress = useCallback(() => {
         setAnswered(true);
       }
     } else {
-      // グループ問題
       const group = item.group;
       const gResults: Record<number, boolean> = {};
       let correctCount = 0;
@@ -315,26 +251,19 @@ const saveProgress = useCallback(() => {
     }
   };
 
-  // テキスト正規化（全角→半角、トリム）
   function normalizeText(s: string): string {
-    return s
-      .trim()
-      .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) =>
-        String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)
-      )
-      .replace(/[−ー]/g, '-')
-      .replace(/　/g, ' ')
-      .toLowerCase();
+    return s.trim()
+      .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+      .replace(/[−ー]/g, '-').replace(/　/g, ' ').toLowerCase();
   }
 
-  // 次へ
   const handleNext = () => {
     if (!answered) {
       handleAnswer();
     } else {
       if (currentIndex + 1 >= quizItems.length) {
-        localStorage.removeItem(`progress_${examId}`);
-        localStorage.setItem(`quizResult_${examId}`, JSON.stringify(results));
+        clearProgress(user, examId);
+        saveQuizResult(examId, results);
         router.push(`/exams/${examId}/result`);
       } else {
         goToNext();
@@ -361,12 +290,10 @@ const saveProgress = useCallback(() => {
     setShowExplanation(false);
   };
 
-  // 戻る
   const handleBack = () => {
     if (answered) {
       setAnswered(false);
       setShowExplanation(false);
-      // 結果を巻き戻す
       const item = quizItems[currentIndex];
       if (item.type === 'single') {
         setResults((prev) => prev.slice(0, -1));
@@ -377,7 +304,6 @@ const saveProgress = useCallback(() => {
     } else if (currentIndex > 0) {
       setCurrentIndex((prev) => prev - 1);
       resetState();
-      // 前の問題の結果も巻き戻す
       const prevItem = quizItems[currentIndex - 1];
       if (prevItem.type === 'single') {
         setResults((prev) => prev.slice(0, -1));
@@ -386,23 +312,16 @@ const saveProgress = useCallback(() => {
         setResults((prev) => prev.slice(0, -count));
       }
     } else {
-      saveProgress();
+      doSaveProgress();
       router.back();
     }
   };
 
-  // お気に入り切り替え
-  const toggleFavorite = (questionId: number) => {
-    setFavorites((prev) => {
-      const next = prev.includes(questionId)
-        ? prev.filter((id) => id !== questionId)
-        : [...prev, questionId];
-      localStorage.setItem(`favorites_${examId}`, JSON.stringify(next));
-      return next;
-    });
+  const handleToggleFavorite = async (questionId: number) => {
+    const next = await toggleFavoriteStorage(user, examId, questionId);
+    setFavorites(next);
   };
 
-  // 次へボタンが押せるかどうか
   const canProceed = (): boolean => {
     if (answered) return true;
     const item = quizItems[currentIndex];
@@ -416,9 +335,7 @@ const saveProgress = useCallback(() => {
     switch (q.question_type) {
       case 'choice':
       case 'image_choice':
-        return q.max_selections >= 2
-          ? selectedChoiceIds.length > 0
-          : selectedChoiceId !== null;
+        return q.max_selections >= 2 ? selectedChoiceIds.length > 0 : selectedChoiceId !== null;
       case 'text':
         return textInput.trim().length > 0;
       case 'multi_blanks': {
@@ -426,25 +343,18 @@ const saveProgress = useCallback(() => {
         return keys.every((k) => (blanksInput[k] || '').trim().length > 0);
       }
       case 'essay':
-        return true; // essay は常に次へ可能
+        return true;
       default:
         return false;
     }
   };
 
-  // ==============================
-  // ローディング・空データ
-  // ==============================
   if (loading) {
     return (
       <div className="page-container">
-        <header className="header">
-          <Link href="/" className="header-logo">OpenStudy</Link>
-        </header>
+        <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
         <div className="page-body">
-          <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>
-            問題を読み込み中...
-          </p>
+          <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>問題を読み込み中...</p>
         </div>
       </div>
     );
@@ -453,30 +363,19 @@ const saveProgress = useCallback(() => {
   if (quizItems.length === 0) {
     return (
       <div className="page-container">
-        <header className="header">
-          <Link href="/" className="header-logo">OpenStudy</Link>
-        </header>
-        <div className="page-body">
-          <p style={{ textAlign: 'center', padding: '2rem' }}>問題が見つかりません</p>
-        </div>
-        <div className="nav-buttons">
-          <button className="btn btn-back" onClick={() => router.back()}>戻る</button>
-        </div>
+        <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
+        <div className="page-body"><p style={{ textAlign: 'center', padding: '2rem' }}>問題が見つかりません</p></div>
+        <div className="nav-buttons"><button className="btn btn-back" onClick={() => router.back()}>戻る</button></div>
       </div>
     );
   }
 
   const currentItem = quizItems[currentIndex];
-
-  // 問題番号の計算（表示用）
   const totalQuestions = quizItems.reduce((sum, item) =>
     sum + (item.type === 'single' ? 1 : item.group.questions.length), 0);
   const currentQuestionNum = quizItems.slice(0, currentIndex).reduce((sum, item) =>
     sum + (item.type === 'single' ? 1 : item.group.questions.length), 0) + 1;
 
-  // ==============================
-  // レンダリング
-  // ==============================
   return (
     <div className="page-container">
       <header className="header">
@@ -488,22 +387,14 @@ const saveProgress = useCallback(() => {
 
       <div className="page-body">
         <div className="exam-name-bar">{exam?.title}</div>
-
         {currentItem.type === 'single'
           ? renderSingleQuestion(currentItem.question)
-          : renderGroupQuestion(currentItem.group)
-        }
+          : renderGroupQuestion(currentItem.group)}
       </div>
 
-      {/* Navigation */}
       <div className="nav-buttons">
         <button className="btn btn-back" onClick={handleBack}>戻る</button>
-        <button
-          className="btn btn-back"
-          onClick={() => { saveProgress(); router.push('/'); }}
-        >
-          中断する
-        </button>
+        <button className="btn btn-back" onClick={() => { doSaveProgress(); router.push('/'); }}>中断する</button>
         <button
           className={`btn ${canProceed() ? 'btn-primary' : 'btn-disabled'}`}
           onClick={handleNext}
@@ -515,34 +406,19 @@ const saveProgress = useCallback(() => {
     </div>
   );
 
-  // ==============================
-  // 単一問題のレンダリング
-  // ==============================
   function renderSingleQuestion(q: Question) {
-    // 音声URL
     const audioUrl = q.audio_url;
-    // 画像URL
     const imageUrl = q.image_url;
-
     return (
       <>
-        {/* 画像（存在する場合） */}
         {imageUrl && (
           <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
             <img src={imageUrl} alt="" style={{ maxWidth: '100%', borderRadius: '8px' }} />
           </div>
         )}
-
-        {/* 問題文 */}
         <div className="question-text">{q.body_text}</div>
-
-        {/* 音声ボタン（存在する場合） */}
         {audioUrl && renderAudioPlayer(audioUrl)}
-
-        {/* 正誤バナー（回答後） */}
         {answered && q.question_type !== 'essay' && renderResultBanner(q)}
-
-        {/* 問題形式に応じたUI */}
         {(q.question_type === 'choice' || q.question_type === 'image_choice') && renderChoiceUI(q)}
         {q.question_type === 'text' && renderTextUI(q)}
         {q.question_type === 'multi_blanks' && renderMultiBlanksUI(q)}
@@ -551,32 +427,22 @@ const saveProgress = useCallback(() => {
     );
   }
 
-  // ==============================
-  // 正誤バナー（単一問題）
-  // ==============================
   function renderResultBanner(q: Question) {
     const correctChoices = q.choices.filter((c) => c.is_correct);
     const isMultiBlank = q.question_type === 'multi_blanks';
 
-    // 正解テキストの生成
     let correctText = '';
     if (q.question_type === 'text') {
       correctText = q.correct_answers?.answer || '';
     } else if (isMultiBlank) {
-      const ca = q.correct_answers || {};
-      correctText = Object.values(ca).join(', ');
+      correctText = Object.values(q.correct_answers || {}).join(', ');
     } else {
-      correctText = correctChoices.map((c) => {
-        const idx = q.choices.indexOf(c) + 1;
-        return String(idx);
-      }).join(',');
+      correctText = correctChoices.map((c) => String(q.choices.indexOf(c) + 1)).join(',');
     }
 
-    // multi_blanks の部分正解
     let bannerText = currentCorrect ? '正解！' : '不正解';
-    if (isMultiBlank && !currentCorrect) {
-      const keys = Object.keys(q.correct_answers || {});
-      bannerText = groupCorrectCount > 0 ? `${groupCorrectCount}問正解` : '不正解';
+    if (isMultiBlank && !currentCorrect && groupCorrectCount > 0) {
+      bannerText = `${groupCorrectCount}問正解`;
     }
 
     const isFav = favorites.includes(q.id);
@@ -590,7 +456,7 @@ const saveProgress = useCallback(() => {
           <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>
             {showExplanation ? '▼' : '▲'}正解は{correctText}です
           </span>
-          <button className="favorite-btn" onClick={() => toggleFavorite(q.id)}>
+          <button className="favorite-btn" onClick={() => handleToggleFavorite(q.id)}>
             {isFav ? '★' : '☆'}
           </button>
         </div>
@@ -599,9 +465,6 @@ const saveProgress = useCallback(() => {
     );
   }
 
-  // ==============================
-  // 選択式UI（単一選択・複数選択・画像選択）
-  // ==============================
   function renderChoiceUI(q: Question) {
     const isMulti = q.max_selections >= 2;
     const isImageChoice = q.question_type === 'image_choice';
@@ -610,22 +473,13 @@ const saveProgress = useCallback(() => {
       <div>
         {q.choices.map((choice, idx) => {
           let className = 'choice-option';
-          const isSelected = isMulti
-            ? selectedChoiceIds.includes(choice.id)
-            : selectedChoiceId === choice.id;
+          const isSelected = isMulti ? selectedChoiceIds.includes(choice.id) : selectedChoiceId === choice.id;
 
           if (answered) {
             className += ' answered';
-            if (choice.is_correct) {
-              className += ' correct-answer';
-            } else if (
-              (isMulti ? selectedChoiceIds.includes(choice.id) : choice.id === selectedChoiceId) &&
-              !choice.is_correct
-            ) {
-              className += ' wrong-answer';
-            } else {
-              className += ' neutral-answer';
-            }
+            if (choice.is_correct) className += ' correct-answer';
+            else if ((isMulti ? selectedChoiceIds.includes(choice.id) : choice.id === selectedChoiceId) && !choice.is_correct) className += ' wrong-answer';
+            else className += ' neutral-answer';
           } else if (isSelected) {
             className += ' selected';
           }
@@ -633,25 +487,15 @@ const saveProgress = useCallback(() => {
           let mark = '';
           let markClass = 'choice-mark';
           if (answered) {
-            if (choice.is_correct) {
-              mark = '〇';
-              markClass += ' correct';
-            } else if (
-              (isMulti ? selectedChoiceIds.includes(choice.id) : choice.id === selectedChoiceId) &&
-              !choice.is_correct
-            ) {
-              mark = '×';
-              markClass += ' incorrect';
-            }
+            if (choice.is_correct) { mark = '〇'; markClass += ' correct'; }
+            else if ((isMulti ? selectedChoiceIds.includes(choice.id) : choice.id === selectedChoiceId) && !choice.is_correct) { mark = '×'; markClass += ' incorrect'; }
           }
 
           const handleClick = () => {
             if (answered) return;
             if (isMulti) {
               setSelectedChoiceIds((prev) => {
-                if (prev.includes(choice.id)) {
-                  return prev.filter((id) => id !== choice.id);
-                }
+                if (prev.includes(choice.id)) return prev.filter((id) => id !== choice.id);
                 if (prev.length >= q.max_selections) return prev;
                 return [...prev, choice.id];
               });
@@ -692,31 +536,17 @@ const saveProgress = useCallback(() => {
     );
   }
 
-  // ==============================
-  // 記述式UI（単一テキスト）
-  // ==============================
   function renderTextUI(q: Question) {
     return (
       <div>
-        <input
-          type="text"
-          className="search-input"
-          placeholder="解答を入力"
-          value={textInput}
-          onChange={(e) => setTextInput(e.target.value)}
-          disabled={answered}
-          style={{ marginTop: '0.5rem' }}
-        />
+        <input type="text" className="search-input" placeholder="解答を入力" value={textInput}
+          onChange={(e) => setTextInput(e.target.value)} disabled={answered} style={{ marginTop: '0.5rem' }} />
       </div>
     );
   }
 
-  // ==============================
-  // 複数穴埋めUI
-  // ==============================
   function renderMultiBlanksUI(q: Question) {
     const keys = Object.keys(q.correct_answers || {});
-
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem' }}>
         {keys.map((key) => {
@@ -728,21 +558,12 @@ const saveProgress = useCallback(() => {
               backgroundColor: correct ? 'var(--correct-bg)' : 'var(--incorrect-bg)',
             };
           }
-
           return (
             <div key={key}>
-              <label style={{ fontSize: '0.9rem', fontWeight: 600, display: 'block', marginBottom: '0.25rem' }}>
-                {key}：
-              </label>
-              <input
-                type="text"
-                className="search-input"
-                placeholder={`${key} の解答を入力`}
-                value={blanksInput[key] || ''}
-                onChange={(e) => setBlanksInput((prev) => ({ ...prev, [key]: e.target.value }))}
-                disabled={answered}
-                style={inputStyle}
-              />
+              <label style={{ fontSize: '0.9rem', fontWeight: 600, display: 'block', marginBottom: '0.25rem' }}>{key}：</label>
+              <input type="text" className="search-input" placeholder={`${key} の解答を入力`}
+                value={blanksInput[key] || ''} onChange={(e) => setBlanksInput((prev) => ({ ...prev, [key]: e.target.value }))}
+                disabled={answered} style={inputStyle} />
             </div>
           );
         })}
@@ -750,12 +571,8 @@ const saveProgress = useCallback(() => {
     );
   }
 
-  // ==============================
-  // 自由記述UI（essay）
-  // ==============================
   function renderEssayUI(q: Question) {
     const isFav = favorites.includes(q.id);
-
     return (
       <div>
         {answered && (
@@ -764,38 +581,24 @@ const saveProgress = useCallback(() => {
               <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>
                 {showExplanation ? '▼' : '▲'}模範解答例
               </span>
-              <button className="favorite-btn" onClick={() => toggleFavorite(q.id)}>
+              <button className="favorite-btn" onClick={() => handleToggleFavorite(q.id)}>
                 {isFav ? '★' : '☆'}
               </button>
             </div>
             {showExplanation && <div className="explanation-box">{q.explanation}</div>}
           </>
         )}
-        <textarea
-          placeholder="解答を入力"
-          value={essayInput}
-          onChange={(e) => setEssayInput(e.target.value)}
+        <textarea placeholder="解答を入力" value={essayInput} onChange={(e) => setEssayInput(e.target.value)}
           disabled={answered}
           style={{
-            width: '100%',
-            minHeight: '150px',
-            padding: '0.75rem',
-            border: '1.5px solid var(--border)',
-            borderRadius: '6px',
-            fontSize: '0.95rem',
-            resize: 'vertical',
-            fontFamily: 'inherit',
-            lineHeight: 1.6,
-            marginTop: '0.5rem',
-          }}
-        />
+            width: '100%', minHeight: '150px', padding: '0.75rem', border: '1.5px solid var(--border)',
+            borderRadius: '6px', fontSize: '0.95rem', resize: 'vertical', fontFamily: 'inherit',
+            lineHeight: 1.6, marginTop: '0.5rem',
+          }} />
       </div>
     );
   }
 
-  // ==============================
-  // グループ問題のレンダリング
-  // ==============================
   function renderGroupQuestion(group: QuestionGroup) {
     const audioUrl = group.audio_url;
     const imageUrl = group.image_url;
@@ -807,22 +610,13 @@ const saveProgress = useCallback(() => {
 
     return (
       <>
-        {/* 共通テキスト */}
-        {group.group_text && (
-          <div className="question-text">{group.group_text}</div>
-        )}
-
-        {/* 共通画像 */}
+        {group.group_text && <div className="question-text">{group.group_text}</div>}
         {imageUrl && (
           <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
             <img src={imageUrl} alt="" style={{ maxWidth: '100%', borderRadius: '8px' }} />
           </div>
         )}
-
-        {/* 音声ボタン */}
         {audioUrl && renderAudioPlayer(audioUrl)}
-
-        {/* 正誤バナー（回答後） */}
         {answered && (
           <>
             <div className={`result-banner ${groupCorrectCount === group.questions.length ? 'correct' : groupCorrectCount > 0 ? 'correct' : 'incorrect'}`}>
@@ -833,23 +627,27 @@ const saveProgress = useCallback(() => {
                 {showExplanation ? '▼' : '▲'}正解は{correctNums}です
               </span>
               <button className="favorite-btn" onClick={() => {
-                // グループ内の全問題をお気に入りトグル
                 const allFav = group.questions.every((q) => favorites.includes(q.id));
-                for (const q of group.questions) {
-                  if (allFav) {
-                    setFavorites((prev) => {
-                      const next = prev.filter((id) => id !== q.id);
-                      localStorage.setItem(`favorites_${examId}`, JSON.stringify(next));
-                      return next;
-                    });
-                  } else {
-                    setFavorites((prev) => {
-                      if (prev.includes(q.id)) return prev;
-                      const next = [...prev, q.id];
-                      localStorage.setItem(`favorites_${examId}`, JSON.stringify(next));
-                      return next;
-                    });
+                const doToggle = async () => {
+                  let current = [...favorites];
+                  for (const q of group.questions) {
+                    current = await toggleFavoriteStorage(user, examId, q.id);
                   }
+                  setFavorites(current);
+                };
+                if (allFav) {
+                  doToggle();
+                } else {
+                  const addFavs = async () => {
+                    let current = [...favorites];
+                    for (const q of group.questions) {
+                      if (!current.includes(q.id)) {
+                        current = await toggleFavoriteStorage(user, examId, q.id);
+                      }
+                    }
+                    setFavorites(current);
+                  };
+                  addFavs();
                 }
               }}>
                 {group.questions.every((q) => favorites.includes(q.id)) ? '★' : '☆'}
@@ -867,49 +665,31 @@ const saveProgress = useCallback(() => {
             )}
           </>
         )}
-
-        {/* 各設問 */}
         {group.questions.map((q, qIdx) => (
           <div key={q.id} style={{ marginBottom: '1.5rem' }}>
-            <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.5rem' }}>
-              Questions {qIdx + 1}
-            </div>
+            <div style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.5rem' }}>Questions {qIdx + 1}</div>
             {q.body_text && <div style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>{q.body_text}</div>}
             <div>
-              {q.choices.map((choice, idx) => {
+              {q.choices.map((choice) => {
                 const isSelected = groupAnswers[q.id] === choice.id;
                 let className = 'choice-option';
-
                 if (answered) {
                   className += ' answered';
-                  if (choice.is_correct) {
-                    className += ' correct-answer';
-                  } else if (isSelected && !choice.is_correct) {
-                    className += ' wrong-answer';
-                  } else {
-                    className += ' neutral-answer';
-                  }
+                  if (choice.is_correct) className += ' correct-answer';
+                  else if (isSelected && !choice.is_correct) className += ' wrong-answer';
+                  else className += ' neutral-answer';
                 } else if (isSelected) {
                   className += ' selected';
                 }
-
                 let mark = '';
                 let markClass = 'choice-mark';
                 if (answered) {
                   if (choice.is_correct) { mark = '〇'; markClass += ' correct'; }
                   else if (isSelected && !choice.is_correct) { mark = '×'; markClass += ' incorrect'; }
                 }
-
                 return (
-                  <div
-                    key={choice.id}
-                    className={className}
-                    onClick={() => {
-                      if (!answered) {
-                        setGroupAnswers((prev) => ({ ...prev, [q.id]: choice.id }));
-                      }
-                    }}
-                  >
+                  <div key={choice.id} className={className}
+                    onClick={() => { if (!answered) setGroupAnswers((prev) => ({ ...prev, [q.id]: choice.id })); }}>
                     {answered ? (
                       <span className={markClass}>{mark || '\u00A0'}</span>
                     ) : (
@@ -928,15 +708,10 @@ const saveProgress = useCallback(() => {
     );
   }
 
-  // ==============================
-  // 音声プレイヤー
-  // ==============================
   function renderAudioPlayer(url: string) {
     return (
       <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
-        <audio controls style={{ maxWidth: '100%' }}>
-          <source src={url} />
-        </audio>
+        <audio controls style={{ maxWidth: '100%' }}><source src={url} /></audio>
       </div>
     );
   }

@@ -3,9 +3,8 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { supabase } from '@/lib/supabase';
-import { signInWithGoogle, signOut } from '@/lib/auth';
-import type { User } from '@supabase/supabase-js';
+import { useUser, signInWithGoogle, signOut } from '@/lib/auth';
+import { getBookmarks } from '@/lib/storage';
 
 type MenuOption = {
   id: string;
@@ -26,24 +25,11 @@ export default function Home() {
   const [showAbout, setShowAbout] = useState(false);
   const [hasBookmarks, setHasBookmarks] = useState(false);
   const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
+  const { user } = useUser();
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      setUser(user);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    const bookmarks = JSON.parse(localStorage.getItem('exam_bookmarks') || '[]');
-    setHasBookmarks(bookmarks.length > 0);
-  }, []);
+    getBookmarks(user).then((bm) => setHasBookmarks(bm.length > 0));
+  }, [user]);
 
   const handleNext = () => {
     if (selected === 'search') {
@@ -55,7 +41,6 @@ export default function Home() {
 
   return (
     <div className="page-container">
-      {/* Header */}
       <header className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Link href="/" className="header-logo">OpenStudy</Link>
         <div>
@@ -84,27 +69,19 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Body */}
       <div className="page-body">
         <h1 className="page-title">OpenStudy</h1>
 
-        {/* OpenStudyとは トグル */}
         <div style={{ marginBottom: '1rem' }}>
           <div
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.25rem',
-              cursor: 'pointer',
-              color: 'var(--text-light)',
-              fontSize: '0.9rem',
-              userSelect: 'none',
+              display: 'flex', alignItems: 'center', gap: '0.25rem',
+              cursor: 'pointer', color: 'var(--text-light)', fontSize: '0.9rem', userSelect: 'none',
             }}
             onClick={() => setShowAbout(!showAbout)}
           >
             <span>{showAbout ? '▼' : '▲'}OpenStudyとは</span>
           </div>
-
           {showAbout && (
             <div className="explanation-box" style={{ marginTop: '0.5rem' }}>
               <p style={{ fontWeight: 600, marginBottom: '0.5rem' }}>OpenStudyとは</p>
@@ -127,14 +104,11 @@ export default function Home() {
           {menuOptions.map((option) => {
             const isBookmarkEmpty = option.id === 'bookmarks' && !hasBookmarks;
             const isDisabled = option.disabled || isBookmarkEmpty;
-
             return (
               <div
                 key={option.id}
                 className={`radio-option ${selected === option.id ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}`}
-                onClick={() => {
-                  if (!isDisabled) setSelected(option.id);
-                }}
+                onClick={() => { if (!isDisabled) setSelected(option.id); }}
               >
                 <div className={`radio-circle ${selected === option.id ? 'checked' : ''}`}>
                   {selected === option.id && <div className="radio-circle-inner" />}
@@ -150,7 +124,6 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Navigation */}
       <div className="nav-buttons nav-buttons--right-only">
         <button
           className={`btn ${selected ? 'btn-primary' : 'btn-disabled'}`}

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { getQuizResult, clearQuizResult, saveRetryIds } from '@/lib/storage';
 import { Exam } from '@/lib/types';
 
 type Result = {
@@ -22,24 +23,13 @@ export default function ResultPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // 試験名を取得
     async function fetchExam() {
-      const { data } = await supabase
-        .from('exams')
-        .select('*')
-        .eq('id', examId)
-        .single();
-
+      const { data } = await supabase.from('exams').select('*').eq('id', examId).single();
       if (data) setExam(data);
       setLoading(false);
     }
     fetchExam();
-
-    // 結果データを取得
-    const saved = localStorage.getItem(`quizResult_${examId}`);
-    if (saved) {
-      setResults(JSON.parse(saved));
-    }
+    setResults(getQuizResult(examId));
   }, [examId]);
 
   const correctCount = results.filter((r) => r.correct).length;
@@ -49,25 +39,20 @@ export default function ResultPage() {
 
   const options = [
     { id: 'restart', label: 'はじめから', disabled: false },
-    {
-      id: 'retry',
-      label: '間違えた問題のみ',
-      disabled: wrongIds.length === 0,
-      disabledReason: '全問正解',
-    },
+    { id: 'retry', label: '間違えた問題のみ', disabled: wrongIds.length === 0, disabledReason: '全問正解' },
     { id: 'end', label: '終了する', disabled: false },
   ];
 
   const handleNext = () => {
     if (selected === 'restart') {
-      localStorage.removeItem(`quizResult_${examId}`);
+      clearQuizResult(examId);
       router.push(`/exams/${examId}/quiz?mode=normal&t=${Date.now()}`);
     } else if (selected === 'retry') {
-      localStorage.setItem(`retry_${examId}`, JSON.stringify(wrongIds));
-      localStorage.removeItem(`quizResult_${examId}`);
+      saveRetryIds(examId, wrongIds);
+      clearQuizResult(examId);
       router.push(`/exams/${examId}/quiz?mode=retry&t=${Date.now()}`);
     } else if (selected === 'end') {
-      localStorage.removeItem(`quizResult_${examId}`);
+      clearQuizResult(examId);
       router.push('/');
     }
   };
@@ -75,13 +60,9 @@ export default function ResultPage() {
   if (loading) {
     return (
       <div className="page-container">
-        <header className="header">
-          <Link href="/" className="header-logo">OpenStudy</Link>
-        </header>
+        <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
         <div className="page-body">
-          <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>
-            読み込み中...
-          </p>
+          <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>読み込み中...</p>
         </div>
       </div>
     );
@@ -89,18 +70,11 @@ export default function ResultPage() {
 
   return (
     <div className="page-container">
-      {/* Header */}
-      <header className="header">
-        <Link href="/" className="header-logo">OpenStudy</Link>
-      </header>
+      <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
 
-      {/* Body */}
       <div className="page-body">
-        <div className="exam-name-bar">
-          {exam?.title}
-        </div>
+        <div className="exam-name-bar">{exam?.title}</div>
 
-        {/* 正答率表示 */}
         <div className="score-display">
           <div className="score-label">正答率</div>
           <div className="score-value">{percentage}%</div>
@@ -109,42 +83,26 @@ export default function ResultPage() {
           </p>
         </div>
 
-        {/* 次の行動 */}
         <div className="radio-list">
           {options.map((option) => (
-            <div
-              key={option.id}
+            <div key={option.id}
               className={`radio-option ${selected === option.id ? 'selected' : ''} ${option.disabled ? 'disabled' : ''}`}
-              onClick={() => {
-                if (!option.disabled) setSelected(option.id);
-              }}
-            >
+              onClick={() => { if (!option.disabled) setSelected(option.id); }}>
               <div className={`radio-circle ${selected === option.id ? 'checked' : ''}`}>
                 {selected === option.id && <div className="radio-circle-inner" />}
               </div>
               <span className="radio-label">
                 {option.label}
-                {option.disabled && option.disabledReason && (
-                  <span className="radio-badge">（{option.disabledReason}）</span>
-                )}
+                {option.disabled && option.disabledReason && <span className="radio-badge">（{option.disabledReason}）</span>}
               </span>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Navigation */}
       <div className="nav-buttons">
-        <button className="btn btn-back" onClick={() => router.back()}>
-          戻る
-        </button>
-        <button
-          className={`btn ${selected ? 'btn-primary' : 'btn-disabled'}`}
-          onClick={handleNext}
-          disabled={!selected}
-        >
-          次へ
-        </button>
+        <button className="btn btn-back" onClick={() => router.back()}>戻る</button>
+        <button className={`btn ${selected ? 'btn-primary' : 'btn-disabled'}`} onClick={handleNext} disabled={!selected}>次へ</button>
       </div>
     </div>
   );
