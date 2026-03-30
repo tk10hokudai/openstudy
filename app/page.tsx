@@ -3,6 +3,9 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { supabase } from '@/lib/supabase';
+import { signInWithGoogle, signOut } from '@/lib/auth';
+import type { User } from '@supabase/supabase-js';
 
 type MenuOption = {
   id: string;
@@ -23,6 +26,19 @@ export default function Home() {
   const [showAbout, setShowAbout] = useState(false);
   const [hasBookmarks, setHasBookmarks] = useState(false);
   const router = useRouter();
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      setUser(user);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     const bookmarks = JSON.parse(localStorage.getItem('exam_bookmarks') || '[]');
@@ -40,8 +56,32 @@ export default function Home() {
   return (
     <div className="page-container">
       {/* Header */}
-      <header className="header">
+      <header className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Link href="/" className="header-logo">OpenStudy</Link>
+        <div>
+          {user ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-light)' }}>
+                {user.user_metadata?.full_name || user.email}
+              </span>
+              <button
+                onClick={signOut}
+                className="btn"
+                style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem', backgroundColor: 'var(--border)', color: 'var(--text)' }}
+              >
+                ログアウト
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={signInWithGoogle}
+              className="btn btn-primary"
+              style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem' }}
+            >
+              Googleでログイン
+            </button>
+          )}
+        </div>
       </header>
 
       {/* Body */}
