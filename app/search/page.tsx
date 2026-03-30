@@ -36,11 +36,19 @@ export default function SearchPage() {
 
   const categories = Array.from(new Set(exams.map((e) => e.category)));
 
-  const filtered = exams.filter((e) => {
-    const matchSearch = e.title.toLowerCase().includes(search.toLowerCase());
-    const matchCategory = activeCategory ? e.category === activeCategory : true;
-    return matchSearch && matchCategory;
-  });
+  const filtered = exams
+    .filter((e) => {
+      const matchSearch = e.title.toLowerCase().includes(search.toLowerCase());
+      const matchCategory = activeCategory ? e.category === activeCategory : true;
+      return matchSearch && matchCategory;
+    })
+    .sort((a, b) => {
+      const aIsJapanese = /^[\u3000-\u9FFF\uF900-\uFAFF]/.test(a.title);
+      const bIsJapanese = /^[\u3000-\u9FFF\uF900-\uFAFF]/.test(b.title);
+      if (aIsJapanese && !bIsJapanese) return -1;
+      if (!aIsJapanese && bIsJapanese) return 1;
+      return a.title.localeCompare(b.title, 'ja');
+    });
 
   const toggleBookmark = (examId: number, e: React.MouseEvent) => {
     e.stopPropagation();

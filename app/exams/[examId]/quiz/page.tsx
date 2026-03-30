@@ -138,17 +138,57 @@ export default function QuizPage() {
         });
       }
 
-      setQuizItems(filtered);
+      if (mode === 'random') {
+        const count = parseInt(searchParams.get('count') || '0', 10);
+        if (count > 0 && count < filtered.length) {
+          // シャッフルして先頭 count 件を取得
+          const shuffled = [...filtered].sort(() => Math.random() - 0.5);
+          filtered = shuffled.slice(0, count);
+        }
+      }
+
+
 
       if (mode === 'continue') {
         const saved = localStorage.getItem(`progress_${examId}`);
         if (saved) {
           const progress = JSON.parse(saved);
+
+          // 保存された問題IDリストから QuizItem を再構築
+          const savedQuestionIds: number[] = progress.questionIds || [];
+          const savedGroupIds: number[] = progress.groupIds || [];
+
+          if (savedQuestionIds.length > 0 || savedGroupIds.length > 0) {
+            // 保存順序に従って items をフィルタ・並び替え
+            const restoredItems: typeof items = [];
+
+            // 独立問題を保存順で追加
+            for (const qId of savedQuestionIds) {
+              const found = items.find(
+                (it) => it.type === 'single' && it.question.id === qId
+              );
+              if (found) restoredItems.push(found);
+            }
+
+            // グループ問題を保存順で追加
+            for (const gId of savedGroupIds) {
+              const found = items.find(
+                (it) => it.type === 'group' && it.group.id === gId
+              );
+              if (found) restoredItems.push(found);
+            }
+
+            if (restoredItems.length > 0) {
+              filtered = restoredItems;
+            }
+          }
+
           setCurrentIndex(progress.currentIndex || 0);
           setResults(progress.results || []);
         }
       }
 
+      setQuizItems(filtered);
       setLoading(false);
     }
     fetchData();
@@ -165,12 +205,31 @@ export default function QuizPage() {
     return [...childIds, ...grandchildIds.flat()];
   }
 
-  const saveProgress = useCallback(() => {
+const saveProgress = useCallback(() => {
+    // 出題中の問題IDリスト・グループIDリストを構築
+    const questionIds: number[] = [];
+    const groupIds: number[] = [];
+    for (const item of quizItems) {
+      if (item.type === 'single') {
+        questionIds.push(item.question.id);
+      } else {
+        groupIds.push(item.group.id);
+      }
+    }
+
     localStorage.setItem(
       `progress_${examId}`,
-      JSON.stringify({ currentIndex, results })
+      JSON.stringify({
+        mode,
+        sectionId: sectionId || null,
+        questionIds,
+        groupIds,
+        currentIndex,
+        results,
+        totalItems: quizItems.length,
+      })
     );
-  }, [examId, currentIndex, results]);
+  }, [examId, mode, sectionId, quizItems, currentIndex, results]);
 
   // ==============================
   // 回答確定ロジック

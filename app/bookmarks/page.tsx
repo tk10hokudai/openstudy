@@ -30,7 +30,14 @@ export default function BookmarksPage() {
         .order('title');
 
       if (!error && data) {
-        setExams(data);
+        const sorted = [...data].sort((a, b) => {
+          const aIsJapanese = /^[\u3000-\u9FFF\uF900-\uFAFF]/.test(a.title);
+          const bIsJapanese = /^[\u3000-\u9FFF\uF900-\uFAFF]/.test(b.title);
+          if (aIsJapanese && !bIsJapanese) return -1;
+          if (!aIsJapanese && bIsJapanese) return 1;
+          return a.title.localeCompare(b.title, 'ja');
+        });
+        setExams(sorted);
       }
       setLoading(false);
     }
