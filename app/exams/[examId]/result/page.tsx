@@ -7,10 +7,7 @@ import { supabase } from '@/lib/supabase';
 import { getQuizResult, clearQuizResult, saveRetryIds } from '@/lib/storage';
 import { Exam } from '@/lib/types';
 
-type Result = {
-  questionId: number;
-  correct: boolean;
-};
+type Result = { questionId: number; correct: boolean };
 
 export default function ResultPage() {
   const params = useParams();
@@ -37,6 +34,11 @@ export default function ResultPage() {
   const percentage = total > 0 ? Math.round((correctCount / total) * 100) : 0;
   const wrongIds = results.filter((r) => !r.correct).map((r) => r.questionId);
 
+  const handleAddWrongToCollection = () => {
+    if (wrongIds.length === 0) return;
+    router.push(`/exams/${examId}/add-to-collection?questionIds=${wrongIds.join(',')}&returnTo=/exams/${examId}/result`);
+  };
+
   const options = [
     { id: 'restart', label: 'はじめから', disabled: false },
     { id: 'retry', label: '間違えた問題のみ', disabled: wrongIds.length === 0, disabledReason: '全問正解' },
@@ -58,14 +60,8 @@ export default function ResultPage() {
   };
 
   if (loading) {
-    return (
-      <div className="page-container">
-        <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
-        <div className="page-body">
-          <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>読み込み中...</p>
-        </div>
-      </div>
-    );
+    return (<div className="page-container"><header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
+      <div className="page-body"><p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>読み込み中...</p></div></div>);
   }
 
   return (
@@ -82,6 +78,22 @@ export default function ResultPage() {
             {total}問中 {correctCount}問正解
           </p>
         </div>
+
+        {/* 間違えた問題をすべて追加する */}
+        {wrongIds.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', marginBottom: '1.5rem' }}>
+            <span style={{ fontSize: '0.9rem', color: 'var(--text-light)' }}>
+              間違えた問題をすべて追加する
+            </span>
+            <button
+              className="favorite-btn"
+              style={{ color: 'var(--primary)', fontSize: '1.5rem' }}
+              onClick={handleAddWrongToCollection}
+            >
+              ＋
+            </button>
+          </div>
+        )}
 
         <div className="radio-list">
           {options.map((option) => (

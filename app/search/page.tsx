@@ -60,7 +60,7 @@ export default function SearchPage() {
 
   const handleNext = () => {
     if (selectedExamId !== null) {
-      router.push(`/exams/${selectedExamId}/mode`);
+      router.push(`/exams/${selectedExamId}/sections`);
     }
   };
 

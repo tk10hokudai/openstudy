@@ -59,7 +59,7 @@ export default function BookmarksPage() {
 
   const handleNext = () => {
     if (selectedExamId !== null) {
-      router.push(`/exams/${selectedExamId}/mode`);
+      router.push(`/exams/${selectedExamId}/sections`);
     }
   };
 
@@ -71,7 +71,7 @@ export default function BookmarksPage() {
 
       <div className="page-body">
         <h2 className="section-title" style={{ textAlign: 'center', fontSize: '1.1rem', marginBottom: '1rem' }}>
-          ◇ブックマーク
+          ブックマークした問題集
         </h2>
 
         {loading ? (

@@ -42,6 +42,7 @@ body {
 
 .page-body {
   flex: 1;
+  padding-top: 0.01px; /* マージン相殺防止 */
 }
 
 /* ===== Header ===== */
@@ -195,7 +196,7 @@ body {
   font-size: 1.75rem;
   font-weight: 700;
   text-align: center;
-  margin: 3rem 0 2rem;
+  margin: 0 0 1.5rem;
 }
 
 .section-title {

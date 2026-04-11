@@ -11,6 +11,7 @@ export type ExamSection = {
   parent_section_id: number | null;
   title: string;
   order_index: number;
+  question_count: number | null;
 };
 
 export type QuestionGroup = {
@@ -48,13 +49,24 @@ export type Choice = {
   is_correct: boolean;
 };
 
-// 演習画面で1画面に表示する単位
-// 独立問題 → QuizItem に Question が1つ
-// グループ問題 → QuizItem に Question が複数 + グループ情報
 export type QuizItem = {
   type: 'single';
   question: Question;
 } | {
   type: 'group';
   group: QuestionGroup;
+};
+
+export type UserCollection = {
+  id: number;
+  user_id: string;
+  title: string;
+  created_at: string;
+};
+
+export type UserCollectionItem = {
+  id: number;
+  collection_id: number;
+  question_id: number;
+  added_at: string;
 };
