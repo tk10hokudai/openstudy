@@ -300,6 +300,20 @@ body {
   font-size: 0.95rem;
   font-weight: 500;
   line-height: 1.8;
+  white-space: pre-wrap;
+  margin-bottom: 1.25rem;
+}
+
+.code-block {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.875rem 1.125rem;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.875rem;
+  line-height: 1.75;
+  white-space: pre;
+  overflow-x: auto;
   margin-bottom: 1.25rem;
 }
 
@@ -416,7 +430,7 @@ body {
 /* ===== Score ===== */
 .score-display {
   text-align: center;
-  padding: 2rem 0;
+  padding: 0.5rem 0 1.5rem;
 }
 
 .score-label {

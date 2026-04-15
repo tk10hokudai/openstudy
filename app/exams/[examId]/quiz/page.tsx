@@ -1,20 +1,88 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { useUser } from '@/lib/auth';
 import {
   getProgress, saveProgress as saveProgressStorage, clearProgress,
-  saveQuizResult,
+  saveQuizResult, getCollectionItems, saveReviewState, getReviewState,
 } from '@/lib/storage';
-import { Exam, Question, QuestionGroup, QuizItem } from '@/lib/types';
+import { Choice, Exam, Question, QuestionGroup, QuizItem } from '@/lib/types';
 
 type Result = {
   questionId: number;
   correct: boolean;
+  selectedChoiceId?: number | null;
+  selectedChoiceIds?: number[];
+  textInput?: string;
 };
+
+// Fisher-Yates シャッフル（新しい配列を返す）
+function fisherYatesShuffle<T>(arr: T[]): T[] {
+  const result = [...arr];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
+type SavedAnswer = {
+  correct: boolean;
+  groupCorrectCount: number;
+  selectedChoiceId: number | null;
+  selectedChoiceIds: number[];
+  textInput: string;
+  blanksInput: Record<string, string>;
+  groupAnswers: Record<number, number>;
+};
+
+function buildSavedAnswers(items: QuizItem[], results: Result[], upToIndex: number): Record<number, SavedAnswer> {
+  const saved: Record<number, SavedAnswer> = {};
+  let ri = 0;
+  for (let i = 0; i < upToIndex && i < items.length; i++) {
+    const item = items[i];
+    if (item.type === 'single') {
+      const r = results[ri++];
+      if (r !== undefined) {
+        saved[i] = {
+          correct: r.correct,
+          groupCorrectCount: 0,
+          selectedChoiceId: r.selectedChoiceId ?? null,
+          selectedChoiceIds: r.selectedChoiceIds || [],
+          textInput: r.textInput || '',
+          blanksInput: {},
+          groupAnswers: {},
+        };
+      }
+    } else {
+      const qCount = item.group.questions.length;
+      const groupRes = results.slice(ri, ri + qCount);
+      ri += qCount;
+      if (groupRes.length > 0) {
+        const correctCount = groupRes.filter((r) => r.correct).length;
+        const restoredGroupAnswers: Record<number, number> = {};
+        for (let j = 0; j < groupRes.length; j++) {
+          const qId = item.group.questions[j]?.id;
+          const choiceId = groupRes[j]?.selectedChoiceId;
+          if (qId != null && choiceId != null) restoredGroupAnswers[qId] = choiceId;
+        }
+        saved[i] = {
+          correct: correctCount === qCount,
+          groupCorrectCount: correctCount,
+          selectedChoiceId: null,
+          selectedChoiceIds: [],
+          textInput: '',
+          blanksInput: {},
+          groupAnswers: restoredGroupAnswers,
+        };
+      }
+    }
+  }
+  return saved;
+}
 
 export default function QuizPage() {
   const params = useParams();
@@ -46,18 +114,61 @@ export default function QuizPage() {
   const [currentCorrect, setCurrentCorrect] = useState(false);
   const [groupCorrectCount, setGroupCorrectCount] = useState(0);
 
+  const [savedAnswers, setSavedAnswers] = useState<Record<number, SavedAnswer>>({});
+
+  // シャッフル済み選択肢マップ（question.id → shuffled Choice[]）
+  // quizItems 確定時に一括計算し、セッション中は変更しない
+  const [shuffledChoicesMap, setShuffledChoicesMap] = useState<Record<number, Choice[]>>({});
+  // sectionId → shuffle_choices（fetchData で設定）
+  const sectionShuffleMapRef = useRef<Record<number, boolean>>({});
+
   useEffect(() => {
     async function fetchData() {
-      // コレクションモードは直接問題IDで取得（複数試験の問題に対応）
+      // ID リストを 200 件ずつバッチ取得（URL 長制限・max_rows 回避）
+      async function fetchQuestionsByIds(ids: number[]): Promise<Question[]> {
+        const BATCH = 200;
+        const results: Question[] = [];
+        for (let i = 0; i < ids.length; i += BATCH) {
+          const { data } = await supabase
+            .from('questions').select('*, choices(*)').in('id', ids.slice(i, i + BATCH));
+          if (data) results.push(...(data as Question[]));
+        }
+        return results;
+      }
+      async function fetchGroupsByIds(ids: number[]): Promise<QuestionGroup[]> {
+        const BATCH = 200;
+        const results: QuestionGroup[] = [];
+        for (let i = 0; i < ids.length; i += BATCH) {
+          const { data } = await supabase
+            .from('question_groups').select('*, questions(*, choices(*))').in('id', ids.slice(i, i + BATCH));
+          if (data) results.push(...(data as QuestionGroup[]));
+        }
+        return results;
+      }
+
+      // items の section_id 一覧から sectionShuffleMapRef を設定するヘルパー
+      async function applyShuffleMap(items: QuizItem[]) {
+        const sectionIds = [...new Set(
+          items.map((it) => it.type === 'single' ? it.question.section_id : it.group.section_id)
+               .filter((id): id is number => id !== null)
+        )];
+        if (sectionIds.length === 0) return;
+        const { data: secData } = await supabase
+          .from('exam_sections').select('id, shuffle_choices').in('id', sectionIds);
+        const map: Record<number, boolean> = {};
+        for (const s of secData ?? []) map[s.id] = s.shuffle_choices ?? true;
+        sectionShuffleMapRef.current = map;
+      }
+
+      // コレクションモードは collectionId からDB取得（URL長制限回避・大量問題対応）
       if (mode === 'collection') {
-        const collectionItemsStr = searchParams.get('questionIds');
-        const qIds = collectionItemsStr ? collectionItemsStr.split(',').map(Number).filter(Boolean) : [];
+        if (!collectionIdParam) { setLoading(false); return; }
+        const qIds = await getCollectionItems(user, collectionIdParam);
         if (qIds.length > 0) {
-          const { data: directQs } = await supabase
-            .from('questions').select('*, choices(*)').in('id', qIds);
+          const directQs = await fetchQuestionsByIds(qIds);
           const items: QuizItem[] = [];
-          const soloQs = (directQs || []).filter((q) => !q.group_id);
-          const groupQs = (directQs || []).filter((q) => q.group_id);
+          const soloQs = directQs.filter((q) => !q.group_id);
+          const groupQs = directQs.filter((q) => q.group_id);
           for (const q of soloQs) items.push({ type: 'single', question: q as Question });
           const groupIds = [...new Set(groupQs.map((q) => q.group_id as number))];
           if (groupIds.length > 0) {
@@ -70,6 +181,7 @@ export default function QuizPage() {
               }
             }
           }
+          await applyShuffleMap(items);
           setQuizItems(items);
         }
         setLoading(false);
@@ -84,11 +196,10 @@ export default function QuizPage() {
           const gIds = progress.groupIds || [];
           const items: QuizItem[] = [];
 
-          // 独立問題を復元
+          // 独立問題を復元（BATCH=200 で URL長制限・max_rows を回避）
           if (qIds.length > 0) {
-            const { data: directQs } = await supabase
-              .from('questions').select('*, choices(*)').in('id', qIds);
-            for (const q of (directQs || [])) {
+            const directQs = await fetchQuestionsByIds(qIds);
+            for (const q of directQs) {
               items.push({ type: 'single', question: q as Question });
             }
           }
@@ -105,9 +216,15 @@ export default function QuizPage() {
             }
           }
 
-          if (items.length > 0) setQuizItems(items);
-          setCurrentIndex(progress.currentIndex || 0);
-          setResults(progress.results || []);
+          if (items.length > 0) {
+            await applyShuffleMap(items);
+            setQuizItems(items);
+          }
+          const savedIdx = progress.currentIndex || 0;
+          const savedRes = progress.results || [];
+          setCurrentIndex(savedIdx);
+          setResults(savedRes);
+          setSavedAnswers(buildSavedAnswers(items, savedRes, savedIdx));
         }
         setLoading(false);
         return;
@@ -117,111 +234,203 @@ export default function QuizPage() {
         .from('exams').select('*').eq('id', examId).single();
       if (examData) setExam(examData);
 
-      // すべてのセクションIDを取得
+      // すべてのセクションIDと選択肢シャッフル可否を取得
       const { data: allSections } = await supabase
-        .from('exam_sections').select('id').eq('exam_id', examId);
+        .from('exam_sections').select('id, shuffle_choices').eq('exam_id', examId);
       const allSectionIds = allSections?.map((s) => s.id) || [];
+      // sectionId → shuffle_choices マップ（未定義時はシャッフルあり）
+      const sectionShuffleMap: Record<number, boolean> = {};
+      for (const s of allSections ?? []) sectionShuffleMap[s.id] = s.shuffle_choices ?? true;
+      sectionShuffleMapRef.current = sectionShuffleMap;
 
       if (allSectionIds.length === 0) { setLoading(false); return; }
 
-      // 全問題を取得
-      const { data: soloQuestions } = await supabase
-        .from('questions').select('*, choices(*)').in('section_id', allSectionIds).order('question_number');
-      const { data: groups } = await supabase
-        .from('question_groups').select('*, questions(*, choices(*))').in('section_id', allSectionIds);
-
-      // QuizItem に変換
-      const allItems: QuizItem[] = [];
-      if (soloQuestions) {
-        for (const q of soloQuestions) allItems.push({ type: 'single', question: q as Question });
-      }
-      if (groups) {
-        for (const g of groups as QuestionGroup[]) {
-          g.questions.sort((a, b) => a.question_number - b.question_number);
-          allItems.push({ type: 'group', group: g });
-        }
-      }
-
-      let filtered: QuizItem[] = [];
-
+      // 分野選択モード: 分野ごとに個別クエリして max_rows 上限を回避
       if (mode === 'normal' && sectionsParam) {
-        // 分野選択画面からのパラメータ: "sectionId:count,sectionId:count,..."
         const sectionRequests = sectionsParam.split(',').map((s) => {
           const [id, count] = s.split(':');
           return { sectionId: Number(id), count: Number(count) };
         });
 
+        const filtered: QuizItem[] = [];
         for (const req of sectionRequests) {
           const childIds = await getSectionAndChildIds(req.sectionId);
-          const sectionItems = allItems.filter((item) => {
-            if (item.type === 'single') return childIds.includes(item.question.section_id!);
-            return childIds.includes(item.group.section_id);
-          });
 
-          // ランダムに count 件取得
-          const shuffled = [...sectionItems].sort(() => Math.random() - 0.5);
+          const { data: secSolo } = await supabase
+            .from('questions').select('*, choices(*)').in('section_id', childIds).order('question_number');
+          const { data: secGroups } = await supabase
+            .from('question_groups').select('*, questions(*, choices(*))').in('section_id', childIds).order('id');
+
+          const sectionItems: QuizItem[] = [];
+          if (secSolo) for (const q of secSolo) sectionItems.push({ type: 'single', question: q as Question });
+          if (secGroups) {
+            for (const g of secGroups as QuestionGroup[]) {
+              g.questions.sort((a, b) => a.question_number - b.question_number);
+              sectionItems.push({ type: 'group', group: g });
+            }
+          }
+
+          const shuffled = fisherYatesShuffle(sectionItems);
           const selected = shuffled.slice(0, req.count);
-
-          // セクション内の出題順序を元に並び替え
           selected.sort((a, b) => {
-            const numA = a.type === 'single' ? a.question.question_number : a.group.questions[0]?.question_number || 0;
-            const numB = b.type === 'single' ? b.question.question_number : b.group.questions[0]?.question_number || 0;
+            const numA = a.type === 'single' ? a.question.question_number : a.group.id;
+            const numB = b.type === 'single' ? b.question.question_number : b.group.id;
             return numA - numB;
           });
-
           filtered.push(...selected);
         }
-      } else if (mode === 'normal') {
-        filtered = allItems;
-      } else if (mode === 'retry') {
+
+        setQuizItems(filtered);
+        setLoading(false);
+        return;
+      }
+
+      // ---- retry モード: localStorage の問題IDを直接取得（一括取得の max_rows を回避）----
+      if (mode === 'retry') {
         const retryIds = JSON.parse(localStorage.getItem(`retry_${examId}`) || '[]') as number[];
-        filtered = allItems.filter((item) => {
-          if (item.type === 'single') return retryIds.includes(item.question.id);
-          return item.group.questions.some((q) => retryIds.includes(q.id));
-        });
-      } else {
-        filtered = allItems;
-      }
-
-      if (mode === 'continue') {
-        const progress = await getProgress(user, examId);
-        if (progress) {
-          const savedQuestionIds: number[] = progress.questionIds || [];
-          const savedGroupIds: number[] = progress.groupIds || [];
-
-          if (savedQuestionIds.length > 0 || savedGroupIds.length > 0) {
-            const restoredItems: QuizItem[] = [];
-            for (const qId of savedQuestionIds) {
-              const found = allItems.find((it) => it.type === 'single' && it.question.id === qId);
-              if (found) restoredItems.push(found);
+        const filtered: QuizItem[] = [];
+        if (retryIds.length > 0) {
+          const retryQs = await fetchQuestionsByIds(retryIds);
+          const soloQs = retryQs.filter((q) => !q.group_id);
+          const groupedQs = retryQs.filter((q) => q.group_id);
+          for (const q of soloQs) filtered.push({ type: 'single', question: q as Question });
+          const groupIds = [...new Set(groupedQs.map((q) => q.group_id as number))];
+          if (groupIds.length > 0) {
+            const rGroups = await fetchGroupsByIds(groupIds);
+            for (const g of rGroups) {
+              g.questions.sort((a, b) => a.question_number - b.question_number);
+              filtered.push({ type: 'group', group: g });
             }
-            for (const gId of savedGroupIds) {
-              const found = allItems.find((it) => it.type === 'group' && it.group.id === gId);
-              if (found) restoredItems.push(found);
-            }
-            if (restoredItems.length > 0) filtered = restoredItems;
           }
-          setCurrentIndex(progress.currentIndex || 0);
-          setResults(progress.results || []);
-        }
-      }
-
-      // ソート（continue以外）
-      if (mode !== 'continue') {
-        if (!sectionsParam) {
           filtered.sort((a, b) => {
-            const numA = a.type === 'single' ? a.question.question_number : a.group.questions[0]?.question_number || 0;
-            const numB = b.type === 'single' ? b.question.question_number : b.group.questions[0]?.question_number || 0;
+            const numA = a.type === 'single' ? a.question.question_number : a.group.id;
+            const numB = b.type === 'single' ? b.question.question_number : b.group.id;
             return numA - numB;
           });
         }
+        setQuizItems(filtered);
+        setLoading(false);
+        return;
       }
 
-      setQuizItems(filtered);
+      // ---- continue モード（コレクションなし）: 保存済み ID を直接取得（一括取得の max_rows を回避）----
+      if (mode === 'continue') {
+        const progress = await getProgress(user, examId);
+        const savedCurrentIndex = progress?.currentIndex || 0;
+        const savedResults: Result[] = progress?.results || [];
+        const savedQIds: number[] = progress?.questionIds || [];
+        const savedGIds: number[] = progress?.groupIds || [];
+
+        const restoredItems: QuizItem[] = [];
+        if (savedQIds.length > 0) {
+          const qMap: Record<number, QuizItem> = {};
+          const qs = await fetchQuestionsByIds(savedQIds);
+          for (const q of qs) qMap[q.id] = { type: 'single', question: q as Question };
+          // 保存された出題順を維持してリストを構築
+          for (const id of savedQIds) if (qMap[id]) restoredItems.push(qMap[id]);
+        }
+        if (savedGIds.length > 0) {
+          const gs = await fetchGroupsByIds(savedGIds);
+          for (const g of gs) {
+            g.questions.sort((a, b) => a.question_number - b.question_number);
+            restoredItems.push({ type: 'group', group: g });
+          }
+        }
+
+        setCurrentIndex(savedCurrentIndex);
+        setResults(savedResults);
+        setQuizItems(restoredItems);
+        setSavedAnswers(buildSavedAnswers(restoredItems, savedResults, savedCurrentIndex));
+        setLoading(false);
+        return;
+      }
+
+      // ---- review モード: 結果画面からの解答確認 ----
+      if (mode === 'review') {
+        const review = getReviewState(examId);
+        if (!review) { setLoading(false); return; }
+
+        const restoredItems: QuizItem[] = [];
+        if (review.questionIds.length > 0) {
+          const qMap: Record<number, QuizItem> = {};
+          const qs = await fetchQuestionsByIds(review.questionIds);
+          for (const q of qs) qMap[q.id] = { type: 'single', question: q as Question };
+          for (const id of review.questionIds) if (qMap[id]) restoredItems.push(qMap[id]);
+        }
+        if (review.groupIds.length > 0) {
+          const gs = await fetchGroupsByIds(review.groupIds);
+          for (const g of gs) {
+            g.questions.sort((a, b) => a.question_number - b.question_number);
+            restoredItems.push({ type: 'group', group: g });
+          }
+        }
+
+        if (restoredItems.length > 0) {
+          await applyShuffleMap(restoredItems);
+          const allSaved = buildSavedAnswers(restoredItems, review.results, restoredItems.length);
+          const lastIndex = restoredItems.length - 1;
+          const lastSaved = allSaved[lastIndex];
+          setQuizItems(restoredItems);
+          setResults(review.results);
+          setCurrentIndex(lastIndex);
+          setSavedAnswers(allSaved);
+          if (lastSaved) {
+            setAnswered(true);
+            setCurrentCorrect(lastSaved.correct);
+            setGroupCorrectCount(lastSaved.groupCorrectCount);
+            setSelectedChoiceId(lastSaved.selectedChoiceId);
+            setSelectedChoiceIds(lastSaved.selectedChoiceIds);
+            setTextInput(lastSaved.textInput);
+            setBlanksInput(lastSaved.blanksInput);
+            setGroupAnswers(lastSaved.groupAnswers);
+          }
+        }
+        setLoading(false);
+        return;
+      }
+
+      // ---- normal（sections なし）: セクションごとに個別クエリ（max_rows を回避）----
+      const allItems: QuizItem[] = [];
+      for (const sectionId of allSectionIds) {
+        const { data: secQs } = await supabase
+          .from('questions').select('*, choices(*)').eq('section_id', sectionId).order('question_number');
+        const { data: secGs } = await supabase
+          .from('question_groups').select('*, questions(*, choices(*))').eq('section_id', sectionId).order('id');
+        if (secQs) for (const q of secQs) allItems.push({ type: 'single', question: q as Question });
+        if (secGs) for (const g of secGs as QuestionGroup[]) {
+          g.questions.sort((a, b) => a.question_number - b.question_number);
+          allItems.push({ type: 'group', group: g });
+        }
+      }
+      allItems.sort((a, b) => {
+        const numA = a.type === 'single' ? a.question.question_number : a.group.id;
+        const numB = b.type === 'single' ? b.question.question_number : b.group.id;
+        return numA - numB;
+      });
+      setQuizItems(allItems);
       setLoading(false);
     }
     fetchData();
   }, [examId, mode, sectionsParam, searchParams, user]);
+
+  // quizItems 確定後にシャッフル可能な問題の選択肢を一括シャッフル
+  useEffect(() => {
+    if (quizItems.length === 0) return;
+    const map: Record<number, Choice[]> = {};
+    const shuffleMap = sectionShuffleMapRef.current;
+    for (const item of quizItems) {
+      const sectionId = item.type === 'single' ? (item.question.section_id ?? -1) : item.group.section_id;
+      const shuffleable = shuffleMap[sectionId] ?? true;
+      if (!shuffleable) continue;
+      const questions = item.type === 'single' ? [item.question] : item.group.questions;
+      for (const q of questions) {
+        if (q.question_type === 'choice' || q.question_type === 'image_choice') {
+          map[q.id] = fisherYatesShuffle([...q.choices]);
+        }
+      }
+    }
+    setShuffledChoicesMap(map);
+  }, [quizItems]);
 
   async function getSectionAndChildIds(parentId: number): Promise<number[]> {
     const ids = [parentId];
@@ -237,28 +446,47 @@ export default function QuizPage() {
   }
 
   const doSaveProgress = useCallback(async () => {
+    if (mode === 'review') return;
     const questionIds: number[] = [];
     const groupIds: number[] = [];
     for (const item of quizItems) {
       if (item.type === 'single') questionIds.push(item.question.id);
       else groupIds.push(item.group.id);
     }
+    // 戻るで currentIndex が後退していても、最後に解答した問題の次から再開する
+    const answeredKeys = Object.keys(savedAnswers).map(Number);
+    const resumeIndex = answeredKeys.length > 0 ? Math.max(...answeredKeys) + 1 : currentIndex;
+    // 全問解答済みなら中断データを残さない（完了扱い）
+    if (resumeIndex >= quizItems.length) {
+      await clearProgress(user, examId, collectionIdParam);
+      return;
+    }
     await saveProgressStorage(user, examId, {
       mode, sectionId: null, questionIds, groupIds,
-      currentIndex, results, totalItems: quizItems.length,
+      currentIndex: resumeIndex, results, totalItems: quizItems.length,
       collectionId: collectionIdParam,
     });
-  }, [user, examId, mode, quizItems, currentIndex, results, collectionIdParam]);
+  }, [user, examId, mode, quizItems, currentIndex, results, savedAnswers, collectionIdParam]);
 
   const handleAnswer = () => {
     const item = quizItems[currentIndex];
+    const snap = (correct: boolean, gccnt = 0): SavedAnswer => ({
+      correct, groupCorrectCount: gccnt,
+      selectedChoiceId, selectedChoiceIds: [...selectedChoiceIds],
+      textInput, blanksInput: { ...blanksInput },
+      groupAnswers: { ...(groupAnswers as Record<number, number>) },
+    });
     if (item.type === 'single') {
       const q = item.question;
-      if (q.question_type === 'essay') { setAnswered(true); return; }
+      if (q.question_type === 'essay') {
+        setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(false) }));
+        setAnswered(true); return;
+      }
       if (q.question_type === 'text') {
         const correct = normalizeText(textInput.trim()) === normalizeText(q.correct_answers?.answer || '');
         setCurrentCorrect(correct);
-        setResults((prev) => [...prev, { questionId: q.id, correct }]);
+        setResults((prev) => [...prev, { questionId: q.id, correct, textInput }]);
+        setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(correct) }));
         setAnswered(true); return;
       }
       if (q.question_type === 'multi_blanks') {
@@ -270,18 +498,21 @@ export default function QuizPage() {
         }
         setCurrentCorrect(allCorrect); setGroupCorrectCount(cc);
         setResults((prev) => [...prev, { questionId: q.id, correct: allCorrect }]);
+        setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(allCorrect, cc) }));
         setAnswered(true); return;
       }
       if (q.max_selections >= 2) {
         const correctIds = q.choices.filter((c) => c.is_correct).map((c) => c.id);
         const correct = correctIds.length === selectedChoiceIds.length && correctIds.every((id) => selectedChoiceIds.includes(id));
         setCurrentCorrect(correct);
-        setResults((prev) => [...prev, { questionId: q.id, correct }]);
+        setResults((prev) => [...prev, { questionId: q.id, correct, selectedChoiceIds: [...selectedChoiceIds] }]);
+        setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(correct) }));
         setAnswered(true);
       } else {
         const correct = q.choices.find((c) => c.id === selectedChoiceId)?.is_correct || false;
         setCurrentCorrect(correct);
-        setResults((prev) => [...prev, { questionId: q.id, correct }]);
+        setResults((prev) => [...prev, { questionId: q.id, correct, selectedChoiceId }]);
+        setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(correct) }));
         setAnswered(true);
       }
     } else {
@@ -291,10 +522,11 @@ export default function QuizPage() {
       for (const q of group.questions) {
         const correct = groupAnswers[q.id] === q.choices.find((c) => c.is_correct)?.id;
         if (correct) cc++;
-        newResults.push({ questionId: q.id, correct: !!correct });
+        newResults.push({ questionId: q.id, correct: !!correct, selectedChoiceId: (groupAnswers as Record<number, number>)[q.id] ?? null });
       }
       setGroupCorrectCount(cc);
       setResults((prev) => [...prev, ...newResults]);
+      setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(cc === group.questions.length, cc) }));
       setAnswered(true);
     }
   };
@@ -306,6 +538,7 @@ export default function QuizPage() {
   }
 
   const handleNext = () => {
+    const willShowResult = !answered;
     let lastTime: number | null = null;
     const step = (now: number) => {
       if (lastTime === null) lastTime = now;
@@ -313,6 +546,10 @@ export default function QuizPage() {
       lastTime = now;
       const currentY = window.scrollY;
       if (currentY <= 0) return;
+      if (willShowResult) {
+        const banner = document.querySelector('.result-banner');
+        if (banner && banner.getBoundingClientRect().top >= 0) return;
+      }
       const newY = Math.max(0, currentY - 2000 * (delta / 1000));
       window.scrollTo(0, newY);
       if (newY > 0) requestAnimationFrame(step);
@@ -320,13 +557,46 @@ export default function QuizPage() {
     requestAnimationFrame(step);
     if (!answered) { handleAnswer(); return; }
     if (currentIndex + 1 >= quizItems.length) {
-      clearProgress(user, examId, collectionIdParam);
-      saveQuizResult(examId, results);
-      router.push(`/exams/${examId}/result`);
+      if (mode === 'review') {
+        router.push(`/exams/${examId}/result`);
+      } else {
+        clearProgress(user, examId, collectionIdParam);
+        saveQuizResult(examId, results);
+        // 結果画面からの解答確認用に review state を保存
+        const rQIds: number[] = [];
+        const rGIds: number[] = [];
+        for (const item of quizItems) {
+          if (item.type === 'single') rQIds.push(item.question.id);
+          else rGIds.push(item.group.id);
+        }
+        let restartUrl = `/exams/${examId}/quiz?mode=${mode}`;
+        if (sectionsParam) restartUrl += `&sections=${sectionsParam}`;
+        if (collectionTitleParam) restartUrl += `&collectionTitle=${encodeURIComponent(collectionTitleParam)}`;
+        if (collectionIdParam) restartUrl += `&collectionId=${collectionIdParam}`;
+        saveReviewState(examId, { questionIds: rQIds, groupIds: rGIds, results, collectionTitle: collectionTitleParam || undefined, restartUrl });
+        router.push(`/exams/${examId}/result`);
+      }
     } else { goToNext(); }
   };
 
-  const goToNext = () => { setCurrentIndex((p) => p + 1); resetState(); };
+  const goToNext = () => {
+    const nextIndex = currentIndex + 1;
+    setCurrentIndex(nextIndex);
+    const a = savedAnswers[nextIndex];
+    if (a) {
+      setAnswered(true);
+      setCurrentCorrect(a.correct);
+      setGroupCorrectCount(a.groupCorrectCount);
+      setSelectedChoiceId(a.selectedChoiceId);
+      setSelectedChoiceIds(a.selectedChoiceIds);
+      setTextInput(a.textInput);
+      setBlanksInput(a.blanksInput);
+      setGroupAnswers(a.groupAnswers);
+      setShowExplanation(false);
+    } else {
+      resetState();
+    }
+  };
 
   const resetState = () => {
     setSelectedChoiceId(null); setSelectedChoiceIds([]); setTextInput('');
@@ -336,17 +606,30 @@ export default function QuizPage() {
   };
 
   const handleBack = () => {
-    if (answered) {
-      setAnswered(false); setShowExplanation(false);
-      const item = quizItems[currentIndex];
-      const count = item.type === 'single' ? 1 : item.group.questions.length;
-      setResults((prev) => prev.slice(0, -count));
-    } else if (currentIndex > 0) {
-      const prevItem = quizItems[currentIndex - 1];
-      const count = prevItem.type === 'single' ? 1 : prevItem.group.questions.length;
-      setCurrentIndex((p) => p - 1); resetState();
-      setResults((prev) => prev.slice(0, -count));
-    } else { doSaveProgress(); router.back(); }
+    if (currentIndex > 0) {
+      const prevIndex = currentIndex - 1;
+      const a = savedAnswers[prevIndex];
+      setCurrentIndex(prevIndex);
+      if (a) {
+        setAnswered(true);
+        setCurrentCorrect(a.correct);
+        setGroupCorrectCount(a.groupCorrectCount);
+        setSelectedChoiceId(a.selectedChoiceId);
+        setSelectedChoiceIds(a.selectedChoiceIds);
+        setTextInput(a.textInput);
+        setBlanksInput(a.blanksInput);
+        setGroupAnswers(a.groupAnswers);
+      } else {
+        resetState();
+      }
+      setShowExplanation(false);
+    } else {
+      if (mode === 'review') {
+        router.push(`/exams/${examId}/result`);
+      } else {
+        doSaveProgress(); router.back();
+      }
+    }
   };
 
   const handleAddToCollection = (questionId: number) => {
@@ -377,6 +660,49 @@ export default function QuizPage() {
     }
   };
 
+  // キーボードショートカット：→=次へ、←=戻る、1〜9=選択肢選択
+  const handleNextRef = useRef(handleNext);
+  handleNextRef.current = handleNext;
+  const handleBackRef = useRef(handleBack);
+  handleBackRef.current = handleBack;
+  // shuffledChoicesMap は ref 経由で参照することで dep 配列サイズを固定する
+  const shuffledChoicesMapRef = useRef(shuffledChoicesMap);
+  shuffledChoicesMapRef.current = shuffledChoicesMap;
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+      if (e.key === 'ArrowRight') {
+        if (canProceed()) handleNextRef.current();
+      } else if (e.key === 'ArrowLeft') {
+        handleBackRef.current();
+      } else if (/^[1-9]$/.test(e.key)) {
+        if (answered) return;
+        const item = quizItems[currentIndex];
+        if (!item || item.type !== 'single') return;
+        const q = item.question;
+        if (q.question_type !== 'choice' && q.question_type !== 'image_choice') return;
+        const idx = parseInt(e.key, 10) - 1;
+        // シャッフル後の表示順に合わせて選択肢を取得する（ref 経由で常に最新値を参照）
+        const displayChoices = shuffledChoicesMapRef.current[q.id] ?? q.choices;
+        if (idx >= displayChoices.length) return;
+        if (q.max_selections >= 2) {
+          const choiceId = displayChoices[idx].id;
+          setSelectedChoiceIds((prev) =>
+            prev.includes(choiceId) ? prev.filter((id) => id !== choiceId) : [...prev, choiceId]
+          );
+        } else {
+          setSelectedChoiceId(displayChoices[idx].id);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answered, currentIndex, quizItems, selectedChoiceId, selectedChoiceIds, textInput, blanksInput, groupAnswers]);
+
   if (loading) {
     return (<div className="page-container"><header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
       <div className="page-body"><p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>問題を読み込み中...</p></div></div>);
@@ -388,6 +714,7 @@ export default function QuizPage() {
   }
 
   const currentItem = quizItems[currentIndex];
+  if (!currentItem) return null;
   const totalQuestions = quizItems.reduce((s, i) => s + (i.type === 'single' ? 1 : i.group.questions.length), 0);
   const currentQuestionNum = quizItems.slice(0, currentIndex).reduce((s, i) => s + (i.type === 'single' ? 1 : i.group.questions.length), 0) + 1;
 
@@ -405,16 +732,33 @@ export default function QuizPage() {
       </div>
       <div className="nav-buttons">
         <button className="btn btn-back" onClick={handleBack}>戻る</button>
-        <button className="btn btn-back" onClick={() => { doSaveProgress(); router.push('/'); }}>中断</button>
+        {mode === 'review'
+          ? <button className="btn btn-back" onClick={() => router.push(`/exams/${examId}/result`)}>結果</button>
+          : <button className="btn btn-back" onClick={() => { doSaveProgress(); router.push('/'); }}>中断</button>
+        }
         <button className={`btn ${canProceed() ? 'btn-primary' : 'btn-disabled'}`} onClick={handleNext} disabled={!canProceed()}>次へ</button>
       </div>
     </div>
   );
 
+  function renderBodyText(bodyText: string | null) {
+    if (!bodyText) return null;
+    // CRLF → LF に正規化してから分割（DBが \r\n で保存している場合の対応）
+    const normalized = bodyText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const sepIdx = normalized.indexOf('\n\n');
+    if (sepIdx === -1) return <div className="question-text">{normalized}</div>;
+    const prose = normalized.slice(0, sepIdx);
+    const code = normalized.slice(sepIdx + 2);
+    return (<>
+      {prose && <div className="question-text">{prose}</div>}
+      <pre className="code-block">{code}</pre>
+    </>);
+  }
+
   function renderSingle(q: Question) {
     return (<>
       {q.image_url && <div style={{ textAlign: 'center', marginBottom: '1rem' }}><img src={q.image_url} alt="" style={{ maxWidth: '100%', borderRadius: '8px' }} /></div>}
-      <div className="question-text">{q.body_text}</div>
+      {renderBodyText(q.body_text)}
       {q.audio_url && <div style={{ textAlign: 'center', marginBottom: '1rem' }}><audio key={q.audio_url} controls style={{ maxWidth: '100%' }}><source src={q.audio_url} /></audio></div>}
       {answered && q.question_type !== 'essay' && renderBanner(q)}
       {(q.question_type === 'choice' || q.question_type === 'image_choice') && renderChoices(q)}
@@ -429,7 +773,14 @@ export default function QuizPage() {
     let correctText = '';
     if (q.question_type === 'text') correctText = q.correct_answers?.answer || '';
     else if (isMultiBlank) correctText = Object.values(q.correct_answers || {}).join(', ');
-    else correctText = q.choices.filter((c) => c.is_correct).map((c) => String(q.choices.indexOf(c) + 1)).join(',');
+    else {
+      // シャッフル後の表示順で正解番号を算出する
+      const displayChoices = shuffledChoicesMap[q.id] ?? q.choices;
+      correctText = displayChoices
+        .map((c, i) => (c.is_correct ? String(i + 1) : null))
+        .filter(Boolean)
+        .join(',');
+    }
 
     let bannerText = currentCorrect ? '正解！' : '不正解';
     if (isMultiBlank && !currentCorrect && groupCorrectCount > 0) bannerText = `${groupCorrectCount}問正解`;
@@ -446,7 +797,9 @@ export default function QuizPage() {
 
   function renderChoices(q: Question) {
     const isMulti = q.max_selections >= 2;
-    return (<div>{q.choices.map((choice, idx) => {
+    // シャッフル可能な問題はシャッフル済み順、それ以外は元の順で表示
+    const displayChoices = shuffledChoicesMap[q.id] ?? q.choices;
+    return (<div>{displayChoices.map((choice, idx) => {
       const isSelected = isMulti ? selectedChoiceIds.includes(choice.id) : selectedChoiceId === choice.id;
       let cn = 'choice-option';
       if (answered) { cn += ' answered'; if (choice.is_correct) cn += ' correct-answer'; else if (isSelected && !choice.is_correct) cn += ' wrong-answer'; else cn += ' neutral-answer'; }

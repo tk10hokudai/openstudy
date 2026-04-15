@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { getQuizResult, clearQuizResult, saveRetryIds } from '@/lib/storage';
+import { getQuizResult, clearQuizResult, saveRetryIds, clearReviewState, getReviewState } from '@/lib/storage';
 import { Exam } from '@/lib/types';
 
 type Result = { questionId: number; correct: boolean };
@@ -46,9 +46,12 @@ export default function ResultPage() {
   ];
 
   const handleNext = () => {
+    const review = getReviewState(examId);
+    clearReviewState(examId);
     if (selected === 'restart') {
       clearQuizResult(examId);
-      router.push(`/exams/${examId}/quiz?mode=normal&t=${Date.now()}`);
+      const restartUrl = review?.restartUrl || `/exams/${examId}/quiz?mode=normal`;
+      router.push(`${restartUrl}&t=${Date.now()}`);
     } else if (selected === 'retry') {
       saveRetryIds(examId, wrongIds);
       clearQuizResult(examId);
@@ -58,6 +61,27 @@ export default function ResultPage() {
       router.push('/');
     }
   };
+
+  const handleNextRef = useRef(handleNext);
+  handleNextRef.current = handleNext;
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight') {
+        if (selected) handleNextRef.current();
+      } else if (e.key === 'ArrowLeft') {
+        router.push(`/exams/${examId}/quiz?mode=review`);
+      } else if (e.key === '1') {
+        setSelected('restart');
+      } else if (e.key === '2') {
+        if (wrongIds.length > 0) setSelected('retry');
+      } else if (e.key === '3') {
+        setSelected('end');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selected, wrongIds, examId, router]);
 
   if (loading) {
     return (<div className="page-container"><header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
@@ -72,7 +96,6 @@ export default function ResultPage() {
         <div className="exam-name-bar">{exam?.title}</div>
 
         <div className="score-display">
-          <div className="score-label">正答率</div>
           <div className="score-value">{percentage}%</div>
           <p style={{ color: 'var(--text-light)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
             {total}問中 {correctCount}問正解
@@ -96,7 +119,7 @@ export default function ResultPage() {
         )}
 
         <div className="radio-list">
-          {options.map((option) => (
+          {options.map((option, idx) => (
             <div key={option.id}
               className={`radio-option ${selected === option.id ? 'selected' : ''} ${option.disabled ? 'disabled' : ''}`}
               onClick={() => { if (!option.disabled) setSelected(option.id); }}>
@@ -104,7 +127,7 @@ export default function ResultPage() {
                 {selected === option.id && <div className="radio-circle-inner" />}
               </div>
               <span className="radio-label">
-                {option.label}
+                {idx + 1}. {option.label}
                 {option.disabled && option.disabledReason && <span className="radio-badge">（{option.disabledReason}）</span>}
               </span>
             </div>
@@ -113,7 +136,7 @@ export default function ResultPage() {
       </div>
 
       <div className="nav-buttons">
-        <button className="btn btn-back" onClick={() => router.back()}>戻る</button>
+        <button className="btn btn-back" onClick={() => router.push(`/exams/${examId}/quiz?mode=review`)}>戻る</button>
         <button className={`btn ${selected ? 'btn-primary' : 'btn-disabled'}`} onClick={handleNext} disabled={!selected}>次へ</button>
       </div>
     </div>

@@ -29,11 +29,17 @@ export default function EditCollectionPage() {
 
       const qIds = await getCollectionItems(user, collectionId);
       if (qIds.length > 0) {
-        const { data } = await supabase
-          .from('questions')
-          .select('id, body_text')
-          .in('id', qIds);
-        if (data) setQuestions(data);
+        // BATCH=200 で URL長制限・max_rows を回避
+        const BATCH = 200;
+        const allData: { id: number; body_text: string }[] = [];
+        for (let i = 0; i < qIds.length; i += BATCH) {
+          const { data } = await supabase
+            .from('questions')
+            .select('id, body_text')
+            .in('id', qIds.slice(i, i + BATCH));
+          if (data) allData.push(...data);
+        }
+        setQuestions(allData);
       }
       setLoading(false);
     }
@@ -77,18 +83,6 @@ export default function EditCollectionPage() {
     setQuestions(remaining);
     setSelectedIds([]);
     setPhase('deleted');
-    let lastTime: number | null = null;
-    const step = (now: number) => {
-      if (lastTime === null) lastTime = now;
-      const delta = now - lastTime;
-      lastTime = now;
-      const currentY = window.scrollY;
-      if (currentY <= 0) return;
-      const newY = Math.max(0, currentY - 2000 * (delta / 1000));
-      window.scrollTo(0, newY);
-      if (newY > 0) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
   };
 
   if (loading) {
@@ -108,17 +102,6 @@ export default function EditCollectionPage() {
 
       <div className="page-body">
         <div className="exam-name-bar">{collectionTitle}</div>
-
-        {phase === 'confirm' && (
-          <p style={{ textAlign: 'center', color: 'var(--incorrect)', fontSize: '0.9rem', marginBottom: '0.75rem' }}>
-            選択した{selectedIds.length}問を削除しますか？
-          </p>
-        )}
-        {phase === 'deleted' && (
-          <p style={{ textAlign: 'center', color: 'var(--correct)', fontSize: '0.9rem', marginBottom: '0.75rem' }}>
-            選択した問題を削除しました
-          </p>
-        )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           {/* すべて選択 */}
@@ -161,13 +144,23 @@ export default function EditCollectionPage() {
                 )}
               </div>
               <span style={{ fontSize: '0.9rem', lineHeight: 1.6 }}>
-                {q.body_text.length > 60 ? q.body_text.slice(0, 60) + '…' : q.body_text}
+                {q.body_text ? (q.body_text.length > 60 ? q.body_text.slice(0, 60) + '…' : q.body_text) : ''}
               </span>
             </div>
           ))}
         </div>
       </div>
 
+      {phase === 'confirm' && (
+        <p style={{ textAlign: 'center', color: 'var(--incorrect)', fontSize: '0.9rem', margin: '0.5rem 1rem' }}>
+          選択した{selectedIds.length}問を削除しますか？
+        </p>
+      )}
+      {phase === 'deleted' && (
+        <p style={{ textAlign: 'center', color: 'var(--correct)', fontSize: '0.9rem', margin: '0.5rem 1rem' }}>
+          選択した問題を削除しました
+        </p>
+      )}
       <div className="nav-buttons">
         <button className="btn btn-back" onClick={() => router.back()}>戻る</button>
         <button

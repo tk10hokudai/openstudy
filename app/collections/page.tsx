@@ -61,7 +61,8 @@ export default function CollectionsPage() {
     if (!examId) return;
     const selectedCollection = collections.find((c) => c.id === selected);
     const collectionTitle = selectedCollection?.title || '';
-    router.push(`/exams/${examId}/quiz?mode=collection&questionIds=${qIds.join(',')}&collectionTitle=${encodeURIComponent(collectionTitle)}&collectionId=${selected}`);
+    // questionIds はURL長制限を超えるため collectionId のみ渡す（クイズ側でDB取得）
+    router.push(`/exams/${examId}/quiz?mode=collection&collectionTitle=${encodeURIComponent(collectionTitle)}&collectionId=${selected}`);
   };
 
   const handleEdit = () => {

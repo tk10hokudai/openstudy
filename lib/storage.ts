@@ -93,11 +93,22 @@ export async function getCollectionItems(user: User | null, collectionId: number
   if (!user) {
     return JSON.parse(localStorage.getItem(`collection_items_${collectionId}`) || '[]');
   }
-  const { data } = await supabase
-    .from('user_collection_items')
-    .select('question_id')
-    .eq('collection_id', collectionId);
-  return data?.map((d) => d.question_id) || [];
+  // max_rows=1000 を超える件数に対応するためページネーションで全件取得
+  const allIds: number[] = [];
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    const { data } = await supabase
+      .from('user_collection_items')
+      .select('question_id')
+      .eq('collection_id', collectionId)
+      .range(from, from + PAGE - 1);
+    if (!data || data.length === 0) break;
+    allIds.push(...data.map((d) => d.question_id));
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return allIds;
 }
 
 export async function removeFromCollection(
@@ -144,7 +155,7 @@ type ProgressData = {
   questionIds: number[];
   groupIds: number[];
   currentIndex: number;
-  results: { questionId: number; correct: boolean }[];
+  results: { questionId: number; correct: boolean; selectedChoiceId?: number | null; selectedChoiceIds?: number[]; textInput?: string }[];
   totalItems: number;
   examTitle?: string;
   collectionId?: number;
@@ -184,7 +195,7 @@ export async function getProgress(
 
   const { data: answers } = await supabase
     .from('user_answers')
-    .select('question_id, is_correct')
+    .select('question_id, is_correct, selected_choice_ids, user_input')
     .eq('session_id', session.id);
 
   return {
@@ -193,7 +204,16 @@ export async function getProgress(
     questionIds: session.question_ids || [],
     groupIds: session.group_ids || [],
     currentIndex: session.current_question_order,
-    results: (answers || []).map((a) => ({ questionId: a.question_id, correct: a.is_correct })),
+    results: (answers || []).map((a) => {
+      const choiceIds: number[] = a.selected_choice_ids || [];
+      return {
+        questionId: a.question_id,
+        correct: a.is_correct,
+        selectedChoiceId: choiceIds.length > 0 ? choiceIds[0] : null,
+        selectedChoiceIds: choiceIds,
+        textInput: a.user_input || '',
+      };
+    }),
     totalItems: (session.question_ids?.length || 0) + (session.group_ids?.length || 0),
     collectionId: session.collection_id ?? undefined,
     examId: String(session.exam_id),
@@ -256,11 +276,21 @@ export async function saveProgress(
   if (error || !session) return;
 
   if (data.results.length > 0) {
-    const answers = data.results.map((r) => ({
-      session_id: session.id,
-      question_id: r.questionId,
-      is_correct: r.correct,
-    }));
+    const answers = data.results.map((r) => {
+      const choiceIds =
+        r.selectedChoiceIds && r.selectedChoiceIds.length > 0
+          ? r.selectedChoiceIds
+          : r.selectedChoiceId != null
+          ? [r.selectedChoiceId]
+          : null;
+      return {
+        session_id: session.id,
+        question_id: r.questionId,
+        is_correct: r.correct,
+        selected_choice_ids: choiceIds,
+        user_input: r.textInput || null,
+      };
+    });
     await supabase.from('user_answers').insert(answers);
   }
 }
@@ -331,4 +361,28 @@ export function clearQuizResult(examId: string): void {
 
 export function saveRetryIds(examId: string, ids: number[]): void {
   localStorage.setItem(`retry_${examId}`, JSON.stringify(ids));
+}
+
+// ============================================
+// 結果画面からの解答確認（review モード用）
+// ============================================
+export type ReviewState = {
+  questionIds: number[];
+  groupIds: number[];
+  results: { questionId: number; correct: boolean; selectedChoiceId?: number | null; selectedChoiceIds?: number[]; textInput?: string }[];
+  collectionTitle?: string;
+  restartUrl?: string; // 「はじめから」で使う元の出題 URL
+};
+
+export function saveReviewState(examId: string, state: ReviewState): void {
+  localStorage.setItem(`review_${examId}`, JSON.stringify(state));
+}
+
+export function getReviewState(examId: string): ReviewState | null {
+  const saved = localStorage.getItem(`review_${examId}`);
+  return saved ? JSON.parse(saved) : null;
+}
+
+export function clearReviewState(examId: string): void {
+  localStorage.removeItem(`review_${examId}`);
 }
