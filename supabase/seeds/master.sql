@@ -8,8 +8,8 @@ INSERT INTO exams OVERRIDING SYSTEM VALUE VALUES
   (1, '基本情報技術者試験', 'IT系',  '情報処理推進機構(IPA)が実施する国家試験。ITエンジニアの基礎知識を問う。', now()),
   (2, 'TOEIC L&R',             '語学系', '英語のリスニング・リーディング能力を測定する国際的な試験。',               now()),
   (3, 'SPI試験',               '就職',   '就職活動で広く使用される適性検査。言語・非言語の2分野で構成される。',       now()),
-  (4, 'TOEIC L&R -単語集-', '語学系', 'TOEICに頻出の英単語を初級・中級・上級の3レベルに分類した単語練習集。',    now()),
-  (5, '基本情報技術者試験 -用語集-', 'IT系', '基本情報技術者試験に頻出のIT用語を分野別に分類した用語練習集。',             now());
+  (4, 'TOEIC L&R【単語集】',          '語学系', 'TOEICに頻出の英単語を初級・中級・上級の3レベルに分類した単語練習集。',    now()),
+  (5, '基本情報技術者試験【用語集】', 'IT系', '基本情報技術者試験に頻出のIT用語を分野別に分類した用語練習集。',             now());
 
 -- 列順: (id, exam_id, parent_section_id, title, order_index, pass_threshold, question_count, shuffle_choices)
 -- question_count = 本番の試験で出題される問題数（表示用）。NULL のセクションは分野選択画面に表示されない

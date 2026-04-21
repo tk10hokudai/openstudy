@@ -113,6 +113,11 @@ export default function QuizPage() {
   const [showExplanation, setShowExplanation] = useState(false);
   const [currentCorrect, setCurrentCorrect] = useState(false);
   const [groupCorrectCount, setGroupCorrectCount] = useState(0);
+  const [autoOpen, setAutoOpen] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('quiz_auto_open') !== 'false' : true
+  );
+  const autoOpenRef = useRef(autoOpen);
+  autoOpenRef.current = autoOpen;
 
   const [savedAnswers, setSavedAnswers] = useState<Record<number, SavedAnswer>>({});
 
@@ -480,14 +485,14 @@ export default function QuizPage() {
       const q = item.question;
       if (q.question_type === 'essay') {
         setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(false) }));
-        setAnswered(true); return;
+        setAnswered(true); setShowExplanation(autoOpenRef.current); return;
       }
       if (q.question_type === 'text') {
         const correct = normalizeText(textInput.trim()) === normalizeText(q.correct_answers?.answer || '');
         setCurrentCorrect(correct);
         setResults((prev) => [...prev, { questionId: q.id, correct, textInput }]);
         setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(correct) }));
-        setAnswered(true); return;
+        setAnswered(true); setShowExplanation(autoOpenRef.current); return;
       }
       if (q.question_type === 'multi_blanks') {
         const ca = q.correct_answers || {};
@@ -499,7 +504,7 @@ export default function QuizPage() {
         setCurrentCorrect(allCorrect); setGroupCorrectCount(cc);
         setResults((prev) => [...prev, { questionId: q.id, correct: allCorrect }]);
         setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(allCorrect, cc) }));
-        setAnswered(true); return;
+        setAnswered(true); setShowExplanation(autoOpenRef.current); return;
       }
       if (q.max_selections >= 2) {
         const correctIds = q.choices.filter((c) => c.is_correct).map((c) => c.id);
@@ -507,13 +512,13 @@ export default function QuizPage() {
         setCurrentCorrect(correct);
         setResults((prev) => [...prev, { questionId: q.id, correct, selectedChoiceIds: [...selectedChoiceIds] }]);
         setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(correct) }));
-        setAnswered(true);
+        setAnswered(true); setShowExplanation(autoOpenRef.current);
       } else {
         const correct = q.choices.find((c) => c.id === selectedChoiceId)?.is_correct || false;
         setCurrentCorrect(correct);
         setResults((prev) => [...prev, { questionId: q.id, correct, selectedChoiceId }]);
         setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(correct) }));
-        setAnswered(true);
+        setAnswered(true); setShowExplanation(autoOpenRef.current);
       }
     } else {
       const group = item.group;
@@ -527,7 +532,7 @@ export default function QuizPage() {
       setGroupCorrectCount(cc);
       setResults((prev) => [...prev, ...newResults]);
       setSavedAnswers((prev) => ({ ...prev, [currentIndex]: snap(cc === group.questions.length, cc) }));
-      setAnswered(true);
+      setAnswered(true); setShowExplanation(autoOpenRef.current);
     }
   };
 
@@ -789,6 +794,9 @@ export default function QuizPage() {
       <div className={`result-banner ${currentCorrect ? 'correct' : (isMultiBlank && groupCorrectCount > 0 ? 'correct' : 'incorrect')}`}>{bannerText}</div>
       <div className="answer-info">
         <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}正解は{correctText}です</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', marginLeft: '0.4rem' }}>
+          （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />常に開く）
+        </label>
         <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id)}>＋</button>
       </div>
       {showExplanation && <div className="explanation-box">{q.explanation}</div>}
@@ -839,6 +847,9 @@ export default function QuizPage() {
     return (<div>
       {answered && (<><div className="answer-info">
         <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}模範解答例</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', marginLeft: '0.4rem' }}>
+          （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />常に開く）
+        </label>
         <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id)}>＋</button>
       </div>{showExplanation && <div className="explanation-box">{q.explanation}</div>}</>)}
       <textarea placeholder="解答を入力" value={essayInput} onChange={(e) => setEssayInput(e.target.value)} disabled={answered}
@@ -857,6 +868,9 @@ export default function QuizPage() {
           {groupCorrectCount === group.questions.length ? '正解！' : `${groupCorrectCount}問正解`}</div>
         <div className="answer-info">
           <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}正解は{correctNums}です</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', marginLeft: '0.4rem' }}>
+            （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />常に開く）
+          </label>
           <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddGroupToCollection(group.questions.map((q) => q.id))}>＋</button>
         </div>
         {showExplanation && <div className="explanation-box">{group.questions.map((q, i) => (
