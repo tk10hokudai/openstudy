@@ -793,10 +793,12 @@ export default function QuizPage() {
     return (<>
       <div className={`result-banner ${currentCorrect ? 'correct' : (isMultiBlank && groupCorrectCount > 0 ? 'correct' : 'incorrect')}`}>{bannerText}</div>
       <div className="answer-info">
-        <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}正解は{correctText}です</span>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', marginLeft: '0.4rem' }}>
-          （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />常に開く）
-        </label>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}正解は{correctText}です</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+            （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />解説を常に表示）
+          </label>
+        </div>
         <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id)}>＋</button>
       </div>
       {showExplanation && <div className="explanation-box">{q.explanation}</div>}
@@ -846,10 +848,12 @@ export default function QuizPage() {
   function renderEssay(q: Question) {
     return (<div>
       {answered && (<><div className="answer-info">
-        <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}模範解答例</span>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', marginLeft: '0.4rem' }}>
-          （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />常に開く）
-        </label>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}模範解答例</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+            （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />解説を常に表示）
+          </label>
+        </div>
         <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id)}>＋</button>
       </div>{showExplanation && <div className="explanation-box">{q.explanation}</div>}</>)}
       <textarea placeholder="解答を入力" value={essayInput} onChange={(e) => setEssayInput(e.target.value)} disabled={answered}
@@ -867,10 +871,12 @@ export default function QuizPage() {
         <div className={`result-banner ${groupCorrectCount === group.questions.length ? 'correct' : groupCorrectCount > 0 ? 'correct' : 'incorrect'}`}>
           {groupCorrectCount === group.questions.length ? '正解！' : `${groupCorrectCount}問正解`}</div>
         <div className="answer-info">
-          <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}正解は{correctNums}です</span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', marginLeft: '0.4rem' }}>
-            （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />常に開く）
-          </label>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}正解は{correctNums}です</span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+              （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />解説を常に表示）
+            </label>
+          </div>
           <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddGroupToCollection(group.questions.map((q) => q.id))}>＋</button>
         </div>
         {showExplanation && <div className="explanation-box">{group.questions.map((q, i) => (
