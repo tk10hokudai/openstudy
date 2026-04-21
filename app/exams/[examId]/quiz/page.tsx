@@ -119,6 +119,9 @@ export default function QuizPage() {
   const autoOpenRef = useRef(autoOpen);
   autoOpenRef.current = autoOpen;
 
+  const [feedbackMap, setFeedbackMap] = useState<Record<number, { rating: 'bad' | 'good' | null; comment: string }>>({});
+  const [commentOpenMap, setCommentOpenMap] = useState<Record<number, boolean>>({});
+
   const [savedAnswers, setSavedAnswers] = useState<Record<number, SavedAnswer>>({});
 
   // シャッフル済み選択肢マップ（question.id → shuffled Choice[]）
@@ -437,6 +440,50 @@ export default function QuizPage() {
     setShuffledChoicesMap(map);
   }, [quizItems]);
 
+  function getLocalFeedback(): Record<number, { rating: 'bad' | 'good' | null; comment: string }> {
+    try { return JSON.parse(localStorage.getItem('quiz_feedback') || '{}'); } catch { return {}; }
+  }
+  function saveLocalFeedback(questionId: number, rating: 'bad' | 'good' | null, comment: string) {
+    const all = getLocalFeedback();
+    all[questionId] = { rating, comment };
+    localStorage.setItem('quiz_feedback', JSON.stringify(all));
+  }
+
+  useEffect(() => {
+    if (!answered) return;
+    const item = quizItems[currentIndex];
+    if (!item) return;
+    const questionIds = item.type === 'group'
+      ? [item.group.questions[0].id]
+      : [item.question.id];
+    if (user) {
+      supabase
+        .from('user_question_feedback')
+        .select('question_id, rating, comment')
+        .eq('user_id', user.id)
+        .in('question_id', questionIds)
+        .then(({ data }) => {
+          if (!data) return;
+          setFeedbackMap((prev) => {
+            const next = { ...prev };
+            data.forEach((row) => {
+              next[row.question_id] = { rating: row.rating as 'bad' | 'good' | null, comment: row.comment || '' };
+            });
+            return next;
+          });
+        });
+    } else {
+      const all = getLocalFeedback();
+      setFeedbackMap((prev) => {
+        const next = { ...prev };
+        questionIds.forEach((id) => {
+          if (all[id]) next[id] = all[id];
+        });
+        return next;
+      });
+    }
+  }, [answered, currentIndex, user, quizItems]);
+
   async function getSectionAndChildIds(parentId: number): Promise<number[]> {
     const ids = [parentId];
     const { data: children } = await supabase
@@ -637,6 +684,34 @@ export default function QuizPage() {
     }
   };
 
+  const handleRating = async (questionId: number, rating: 'bad' | 'good') => {
+    const current = feedbackMap[questionId]?.rating;
+    const newRating = current === rating ? null : rating;
+    const comment = feedbackMap[questionId]?.comment || '';
+    setFeedbackMap((prev) => ({ ...prev, [questionId]: { rating: newRating, comment } }));
+    if (user) {
+      await supabase.from('user_question_feedback').upsert(
+        { user_id: user.id, question_id: questionId, rating: newRating, comment, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id,question_id' }
+      );
+    } else {
+      saveLocalFeedback(questionId, newRating, comment);
+    }
+  };
+
+  const handleCommentSave = async (questionId: number, comment: string) => {
+    const rating = feedbackMap[questionId]?.rating ?? null;
+    setFeedbackMap((prev) => ({ ...prev, [questionId]: { rating, comment } }));
+    if (user) {
+      await supabase.from('user_question_feedback').upsert(
+        { user_id: user.id, question_id: questionId, rating, comment, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id,question_id' }
+      );
+    } else {
+      saveLocalFeedback(questionId, rating, comment);
+    }
+  };
+
   const handleAddToCollection = (questionId: number) => {
     doSaveProgress().then(() => {
       router.push(`/exams/${examId}/add-to-collection?questionIds=${questionId}&returnTo=/exams/${examId}/quiz?mode=continue`);
@@ -760,6 +835,50 @@ export default function QuizPage() {
     </>);
   }
 
+  function renderFeedbackRow(questionId: number) {
+    const fb = feedbackMap[questionId];
+    const badSelected = fb?.rating === 'bad';
+    const goodSelected = fb?.rating === 'good';
+    const isCommentOpen = !!commentOpenMap[questionId];
+    const goodColor = goodSelected ? '#22c55e' : '#9ca3af';
+    const badColor  = badSelected  ? '#ef4444' : '#9ca3af';
+    const commentColor = isCommentOpen ? '#6366f1' : '#9ca3af';
+    const btnBase: React.CSSProperties = { background: 'none', border: 'none', padding: '0.25rem', cursor: 'pointer', display: 'flex', alignItems: 'center' };
+    const thumbPath = 'M512,304.12c0-13.891-4.886-27.321-13.813-38.07c5.922-9.352,9.082-20.11,9.149-31.282c0.086-15.519-6.054-30.258-17.289-41.496c-11.618-11.703-27.594-18.418-43.825-18.418h-98.742c-3.122,0-5.508-2.782-5.035-5.867l5.086-33.07c0.985-6.317,1.481-12.786,1.481-19.215c0-49.847-34.547-107.793-79.086-107.793c-13.414,0-26.457,4.722-36.718,13.301l0,0c-4.387,3.656-6.73,9.211-6.293,14.902l5.492,71.91c0.183,2.695-0.016,5.23-0.598,7.562c-0.622,2.542-1.606,4.906-3.09,7.355l-41.023,75.985l-16.043,29.582c-5.37-6.801-13.617-10.851-22.625-10.851H28.75c-15.879,0-28.75,12.87-28.75,28.75v226.942c0,15.875,12.871,28.746,28.75,28.746h120.277c13.821,0,25.297-9.777,28.09-22.738c0.298-1.286,0.59-2.57,0.715-3.918c21.551,12.57,44.16,12.734,45.187,12.734l181.641-0.168c31.489-1.672,56.153-27.726,56.153-59.316c0-2.801-0.188-5.574-0.555-8.301c19.07-10.402,30.821-30.172,30.821-52.145c0-6.012-0.898-11.934-2.672-17.641C503.226,340.456,512,322.889,512,304.12z M459.778,327.264l-17.836,5.528l-5.894,1.769l0.035,0.043l-0.165,0.051l15.035,20.086c3.188,4.211,4.875,9.226,4.875,14.5c0,11.898-8.484,21.934-20.183,23.859l-18.168,3.047l-5.618,0.89l0.024,0.047l-0.165,0.027l11.13,21.5c1.855,3.582,2.793,7.309,2.793,11.074c0,12.706-9.848,23.32-22.211,24.16l-180.336,0.078c-0.199,0-19.859-0.504-33.902-12.43c-3.851-3.242-7.441-5.609-11.336-7.441V275.072l14.91-12.914c1.801-1.563,3.305-3.442,4.438-5.539l61.965-114.898c3.141-5.242,5.453-10.902,6.855-16.774c1.458-5.821,1.965-12.066,1.516-18.582l-4.614-61.066c2.254-0.75,4.637-1.14,7-1.14c22.578,0,43.84,40.866,43.84,72.542c0,4.684-0.367,9.309-1.086,13.793l-10.867,70.852c-0.707,4.61,2.855,8.762,7.515,8.762h136.894c6.95,0,13.832,2.894,18.871,7.946c4.57,4.621,7.055,10.476,6.992,16.511c0,7.485-3.492,14.434-9.578,19.055l-15.141,11.465l-6.156,4.582l0.062,0.035l-0.137,0.106l22.254,12.61c7.172,4.062,12.496,11.168,13.258,19.375C477.726,313.404,470.66,323.854,459.778,327.264z M142.61,466.701v1.145H35.25V253.904H142.61V466.701z';
+    const commentPath = 'M 5,0.160156 C 2.23828,0.160156 0,2.39844 0,5.16016 0,7.04297 1.05859,8.76953 2.73828,9.62109 10.418,13.8789 17.3828,19.3164 23.3711,25.7383 8.97266,33.6328 0.015625,48.7383 0,65.1602 -0.0351563,77.1055 4.75781,88.5586 13.2891,96.918 21.6445,105.426 33.0781,110.199 45,110.16 h 70 c 24.852,0 45,-20.1483 45,-44.9998 -0.164,-24.7852 -20.215,-44.836 -45,-45 H 73.7813 C 53.7891,5.87891 29.5313,-1.17578 5,0.160156 Z M 45,100.16 C 35.7305,100.188 26.8477,96.4688 20.3594,89.8516 13.7148,83.3555 9.97656,74.4492 10,65.1602 10.0234,50.4063 19.293,37.2539 33.1797,32.2695 c 2.6016,-0.9257 3.9609,-3.7851 3.0351,-6.3867 -0.1796,-0.5039 -0.4375,-0.9726 -0.7656,-1.3945 -3.8515,-4.9024 -8.2109,-9.3867 -13,-13.3789 16.875,1.2773 32.9961,7.5 46.3516,17.8906 0.8984,0.75 2.0312,1.1602 3.1992,1.1602 h 43 c 19.262,0.164 34.836,15.7382 35,35 0,19.3281 -15.668,34.9998 -35,34.9998 H 45';
+    return (
+      <div style={{ textAlign: 'center', margin: '0.35rem 0' }}>
+        <div style={{ display: 'inline-flex', gap: '0.8rem', alignItems: 'center' }}>
+          <button onClick={() => handleRating(questionId, 'bad')} title="Bad" style={btnBase}>
+            <svg viewBox="0 0 512 512" width="22" height="22" style={{ transform: 'scale(-1,-1)' }}>
+              <path fill={badColor} d={thumbPath} />
+            </svg>
+          </button>
+          <button onClick={() => setCommentOpenMap((prev) => ({ ...prev, [questionId]: !prev[questionId] }))} title="コメント" style={btnBase}>
+            <svg viewBox="0 0 21.333332 14.693333" width="24" height="24">
+              <g transform="matrix(1.3333333,0,0,-1.3333333,0,14.693333)">
+                <g transform="scale(0.1)">
+                  <path fill={commentColor} d={commentPath} />
+                </g>
+              </g>
+            </svg>
+          </button>
+          <button onClick={() => handleRating(questionId, 'good')} title="Good" style={btnBase}>
+            <svg viewBox="0 0 512 512" width="22" height="22">
+              <path fill={goodColor} d={thumbPath} />
+            </svg>
+          </button>
+        </div>
+        {isCommentOpen && (
+          <textarea key={`comment-${questionId}`} defaultValue={fb?.comment || ''}
+            onBlur={(e) => handleCommentSave(questionId, e.target.value)}
+            placeholder="メモを入力..."
+            style={{ display: 'block', width: '100%', marginTop: '0.4rem', padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '0.9rem', resize: 'vertical', minHeight: '64px', fontFamily: 'inherit', lineHeight: 1.6 }} />
+        )}
+      </div>
+    );
+  }
+
   function renderSingle(q: Question) {
     return (<>
       {q.image_url && <div style={{ textAlign: 'center', marginBottom: '1rem' }}><img src={q.image_url} alt="" style={{ maxWidth: '100%', borderRadius: '8px' }} /></div>}
@@ -792,6 +911,7 @@ export default function QuizPage() {
 
     return (<>
       <div className={`result-banner ${currentCorrect ? 'correct' : (isMultiBlank && groupCorrectCount > 0 ? 'correct' : 'incorrect')}`}>{bannerText}</div>
+      {renderFeedbackRow(q.id)}
       <div className="answer-info">
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}正解は{correctText}です</span>
@@ -847,15 +967,19 @@ export default function QuizPage() {
 
   function renderEssay(q: Question) {
     return (<div>
-      {answered && (<><div className="answer-info">
-        <div style={{ display: 'flex', alignItems: 'center' }}>
-          <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}模範解答例</span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
-            （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />解説を常に表示）
-          </label>
+      {answered && (<>
+        {renderFeedbackRow(q.id)}
+        <div className="answer-info">
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}模範解答例</span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.78rem', color: 'var(--text-light)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+              （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />解説を常に表示）
+            </label>
+          </div>
+          <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id)}>＋</button>
         </div>
-        <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id)}>＋</button>
-      </div>{showExplanation && <div className="explanation-box">{q.explanation}</div>}</>)}
+        {showExplanation && <div className="explanation-box">{q.explanation}</div>}
+      </>)}
       <textarea placeholder="解答を入力" value={essayInput} onChange={(e) => setEssayInput(e.target.value)} disabled={answered}
         style={{ width: '100%', minHeight: '150px', padding: '0.75rem', border: '1.5px solid var(--border)', borderRadius: '6px', fontSize: '0.95rem', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6, marginTop: '0.5rem' }} />
     </div>);
@@ -870,6 +994,7 @@ export default function QuizPage() {
       {answered && (<>
         <div className={`result-banner ${groupCorrectCount === group.questions.length ? 'correct' : groupCorrectCount > 0 ? 'correct' : 'incorrect'}`}>
           {groupCorrectCount === group.questions.length ? '正解！' : `${groupCorrectCount}問正解`}</div>
+        {renderFeedbackRow(group.questions[0].id)}
         <div className="answer-info">
           <div style={{ display: 'flex', alignItems: 'center' }}>
             <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}正解は{correctNums}です</span>
