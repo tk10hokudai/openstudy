@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 import { useUser } from '@/lib/auth';
 import { getBookmarks, toggleBookmark } from '@/lib/storage';
 import { Exam } from '@/lib/types';
+import { BookmarkIcon } from '@/components/BookmarkIcon';
 
 export default function SearchPage() {
   const router = useRouter();
@@ -120,11 +121,12 @@ export default function SearchPage() {
                 <button
                   onClick={(e) => handleToggleBookmark(exam.id, e)}
                   style={{
-                    background: 'none', border: 'none', fontSize: '1.25rem',
-                    color: '#16a34a', cursor: 'pointer', padding: '0.25rem', lineHeight: 1,
+                    background: 'none', border: 'none',
+                    cursor: 'pointer', padding: '0.25rem', lineHeight: 1,
+                    display: 'flex', alignItems: 'center',
                   }}
                 >
-                  {bookmarks.includes(exam.id) ? '◆' : '◇'}
+                  <BookmarkIcon on={bookmarks.includes(exam.id)} />
                 </button>
               </li>
             ))}
