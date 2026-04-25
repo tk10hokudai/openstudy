@@ -2,15 +2,17 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { useUser } from '@/lib/auth';
+import { getProgressHint } from '@/lib/storage';
 
 type InterruptedItem = {
-  id: string;       // 選択状態のキー
+  id: string;
   title: string;
   examId: string;
   collectionId?: number;
+  currentQuestionNum?: number;
+  totalQuestions?: number;
 };
 
 export default function InterruptedPage() {
@@ -23,16 +25,14 @@ export default function InterruptedPage() {
   useEffect(() => {
     async function load() {
       if (user) {
-        // DB: 最近中断した順に取得
         const { data: sessions } = await supabase
           .from('sessions')
-          .select('exam_id, collection_id, created_at')
+          .select('id, exam_id, collection_id, created_at')
           .eq('user_id', user.id)
           .eq('status', 'in_progress')
           .order('created_at', { ascending: false });
 
         if (sessions && sessions.length > 0) {
-          // コレクション / 試験 で重複除去（最新セッションのみ残す）
           const seen = new Set<string>();
           const unique = sessions.filter((s) => {
             const key = s.collection_id ? `col_${s.collection_id}` : `exam_${s.exam_id}`;
@@ -60,43 +60,51 @@ export default function InterruptedPage() {
           for (const s of unique) {
             if (s.collection_id) {
               const title = colMap.get(s.collection_id);
-              if (title) result.push({ id: `col_${s.collection_id}`, title, examId: String(s.exam_id), collectionId: s.collection_id });
+              if (title) {
+                const hint = getProgressHint('0', s.collection_id);
+                result.push({ id: `col_${s.collection_id}`, title, examId: s.exam_id ? String(s.exam_id) : '0', collectionId: s.collection_id, ...hint ?? {} });
+              }
             } else {
               const title = examMap.get(s.exam_id);
-              if (title) result.push({ id: `exam_${s.exam_id}`, title, examId: String(s.exam_id) });
+              if (title) {
+                const hint = getProgressHint(String(s.exam_id));
+                result.push({ id: `exam_${s.exam_id}`, title, examId: String(s.exam_id), ...hint ?? {} });
+              }
             }
           }
+
           setItems(result);
         }
       } else {
-        // localStorage: 試験中断 + コレクション中断 を収集
         const result: InterruptedItem[] = [];
 
         // 通常試験の中断
         const examKeys = Object.keys(localStorage).filter(
           (k) => k.startsWith('progress_') && !k.startsWith('progress_collection_')
         );
-        const examIds = examKeys.map((k) => Number(k.replace('progress_', '')));
+        const examIds = examKeys.map((k) => Number(k.replace('progress_', ''))).filter((id) => !isNaN(id) && id > 0);
         if (examIds.length > 0) {
           const { data } = await supabase.from('exams').select('id, title').in('id', examIds);
           if (data) {
-            for (const e of data) result.push({ id: `exam_${e.id}`, title: e.title, examId: String(e.id) });
+            for (const e of data) {
+              const hint = getProgressHint(String(e.id));
+              result.push({ id: `exam_${e.id}`, title: e.title, examId: String(e.id), ...hint ?? {} });
+            }
           }
         }
 
         // コレクションの中断
         const colKeys = Object.keys(localStorage).filter((k) => k.startsWith('progress_collection_'));
         if (colKeys.length > 0) {
-          const collectionsData: { id: number; title: string }[] = JSON.parse(
-            localStorage.getItem('user_collections') || '[]'
-          );
+          const collectionsData: { id: number; title: string }[] = JSON.parse(localStorage.getItem('user_collections') || '[]');
           const colMap = new Map(collectionsData.map((c) => [c.id, c.title]));
           for (const key of colKeys) {
             const colId = Number(key.replace('progress_collection_', ''));
             const title = colMap.get(colId);
             if (title) {
-              const progressData = JSON.parse(localStorage.getItem(key) || '{}');
-              result.push({ id: `col_${colId}`, title, examId: String(progressData.examId || ''), collectionId: colId });
+              const p = JSON.parse(localStorage.getItem(key) || '{}');
+              const hint = getProgressHint('0', colId);
+              result.push({ id: `col_${colId}`, title, examId: String(p.examId || ''), collectionId: colId, ...hint ?? {} });
             }
           }
         }
@@ -112,22 +120,18 @@ export default function InterruptedPage() {
     if (!selected) return;
     const item = items.find((i) => i.id === selected);
     if (!item) return;
-    if (item.collectionId) {
-      router.push(
-        `/exams/${item.examId}/quiz?mode=continue&collectionId=${item.collectionId}&collectionTitle=${encodeURIComponent(item.title)}`
-      );
-    } else {
-      router.push(`/exams/${item.examId}/quiz?mode=continue`);
-    }
+    const url = item.collectionId
+      ? `/exams/${item.examId}/quiz?mode=continue&collectionId=${item.collectionId}&collectionTitle=${encodeURIComponent(item.title)}&from=interrupted`
+      : `/exams/${item.examId}/quiz?mode=continue&from=interrupted`;
+    sessionStorage.setItem('show_ad', '1');
+    router.push(url);
   };
 
   return (
     <div className="page-container">
-      <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
-
       <div className="page-body">
-        <h2 className="section-title" style={{ textAlign: 'center', fontSize: '1.1rem', marginBottom: '1rem' }}>
-          中断した問題集
+        <h2 className="section-title" style={{ textAlign: 'center', fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--text)' }}>
+          中断した問題集を再開
         </h2>
 
         {loading ? (
@@ -143,15 +147,21 @@ export default function InterruptedPage() {
                 <div className={`radio-circle ${selected === item.id ? 'checked' : ''}`}>
                   {selected === item.id && <div className="radio-circle-inner" />}
                 </div>
-                <span style={{ flex: 1 }}>{item.title}</span>
+                <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                  <span>{item.title}</span>
+                  {item.totalQuestions != null && item.totalQuestions > 0 && (
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-light)', flexShrink: 0 }}>
+                      中断データ : ({item.currentQuestionNum}/{item.totalQuestions}問)
+                    </span>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
         )}
       </div>
 
-      <div className="nav-buttons">
-        <button className="btn btn-back" onClick={() => router.back()}>戻る</button>
+      <div className="nav-buttons nav-buttons--right-only">
         <button className={`btn ${selected ? 'btn-primary' : 'btn-disabled'}`}
           onClick={handleNext} disabled={!selected}>
           次へ

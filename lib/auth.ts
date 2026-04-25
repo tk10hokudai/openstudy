@@ -36,3 +36,7 @@ export async function signOut() {
   const { error } = await supabase.auth.signOut();
   if (error) console.error('Logout error:', error.message);
 }
+
+
+export const isLocalDev =
+  process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('127.0.0.1') ?? false;

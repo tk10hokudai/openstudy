@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import DevBadge from "@/components/DevBadge";
+import MainNav from "@/components/MainNav";
 
 export const metadata: Metadata = {
   title: "OpenStudy",
@@ -13,7 +15,13 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ja">
-      <body>{children}</body>
+      <body>
+        <div className="global-nav">
+          <MainNav />
+        </div>
+        <DevBadge />
+        {children}
+      </body>
     </html>
   );
 }

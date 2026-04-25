@@ -1,156 +1,64 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { useUser, signInWithGoogle, signOut } from '@/lib/auth';
-import { getBookmarks, hasAnyCollections, getAllInterruptedExamIds } from '@/lib/storage';
-
-type MenuOption = {
-  id: string;
-  label: string;
-  alwaysDisabled?: boolean;
-  badge?: string;
-};
-
-const menuOptions: MenuOption[] = [
-  { id: 'search', label: '試験・資格を検索して演習' },
-  { id: 'create', label: '問題集を作成', alwaysDisabled: true, badge: '【開発中】' },
-  { id: 'interrupted', label: '中断した問題集を再開' },
-  { id: 'collections', label: '作成・追加した問題集を演習' },
-  { id: 'bookmarks', label: 'ブックマークに追加した問題集を演習' },
-];
+import { useState } from 'react';
 
 export default function Home() {
-  const [selected, setSelected] = useState<string | null>(null);
-  const [showAbout, setShowAbout] = useState(false);
-  const [availability, setAvailability] = useState<Record<string, boolean>>({
-    interrupted: false,
-    collections: false,
-    bookmarks: false,
-  });
-  const router = useRouter();
-  const { user } = useUser();
-
-  useEffect(() => {
-    async function check() {
-      const [interruptedIds, hasCollections, bookmarks] = await Promise.all([
-        getAllInterruptedExamIds(user),
-        hasAnyCollections(user),
-        getBookmarks(user),
-      ]);
-      setAvailability({
-        interrupted: interruptedIds.length > 0,
-        collections: hasCollections,
-        bookmarks: bookmarks.length > 0,
-      });
-    }
-    check();
-  }, [user]);
-
-  const handleNext = () => {
-    const routes: Record<string, string> = {
-      search: '/search',
-      interrupted: '/interrupted',
-      collections: '/collections',
-      bookmarks: '/bookmarks',
-    };
-    if (selected && routes[selected]) {
-      router.push(routes[selected]);
-    }
-  };
-
-  const isDisabled = (option: MenuOption): boolean => {
-    if (option.alwaysDisabled) return true;
-    if (option.id in availability) return !availability[option.id];
-    return false;
-  };
-
-  const disabledReason = (id: string): string | null => {
-    if (id === 'interrupted' && !availability.interrupted) return '中断データなし';
-    if (id === 'collections' && !availability.collections) return '問題集なし';
-    if (id === 'bookmarks' && !availability.bookmarks) return '登録なし';
-    return null;
-  };
+  const [showTips, setShowTips] = useState(false);
 
   return (
     <div className="page-container">
-      <header className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Link href="/" className="header-logo">OpenStudy</Link>
-        <div>
-          {user ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-light)' }}>
-                {user.user_metadata?.full_name || user.email}
-              </span>
-              <button onClick={signOut} className="btn"
-                style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem', backgroundColor: 'var(--border)', color: 'var(--text)' }}>
-                ログアウト
-              </button>
-            </div>
-          ) : (
-            <button onClick={signInWithGoogle} className="btn btn-primary"
-              style={{ padding: '0.25rem 0.75rem', fontSize: '0.8rem' }}>
-              Googleでログイン
-            </button>
-          )}
-        </div>
-      </header>
-
       <div className="page-body">
-        <h1 className="page-title">OpenStudy</h1>
+        <h1 style={{
+          textAlign: 'center', fontSize: '2rem', fontWeight: 700,
+          color: 'var(--text)', marginTop: 0, marginBottom: '1.5rem',
+        }}>
+          OpenStudy
+        </h1>
 
-        <div style={{ marginBottom: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer', color: 'var(--text-light)', fontSize: '0.9rem', userSelect: 'none' }}
-            onClick={() => setShowAbout(!showAbout)}>
-            <span>{showAbout ? '▼' : '▲'}OpenStudyとは</span>
-          </div>
-          {showAbout && (
-            <div className="explanation-box" style={{ marginTop: '0.5rem' }}>
-              <p style={{ fontWeight: 600, marginBottom: '0.5rem' }}>OpenStudyとは</p>
-              <p>あらゆる試験・資格の問題演習を行えるサービスです。</p>
-              <p style={{ marginTop: '0.75rem', fontWeight: 600, marginBottom: '0.25rem' }}>UIの見方</p>
-              <p>〇 … 選択肢（タップで選択、◎が選択済み）</p>
-              <p>□ … チェックボックス（複数選択可）</p>
-              <p>＋ … 問題を問題集に追加（青色）</p>
-              <p>ブックマークアイコン（グレー/緑）… 試験・資格をブックマークに登録</p>
-              <p>▲▼ … タップで詳細の開閉</p>
-              <p style={{ marginTop: '0.75rem', fontWeight: 600, marginBottom: '0.25rem' }}>使い方</p>
-              <p>1. 演習したい試験・資格を選んで問題を解きます。</p>
-              <p>2. 解答後に正誤判定と解説が表示されます。</p>
-              <p>3. ＋ボタンで問題を自分用の問題集に追加できます。</p>
-              <p>4. 全問終了後に正答率が表示されます。</p>
+        <div className="explanation-box" style={{ lineHeight: 2 }}>
+          <p>　OpenStudyは、試験・資格の模擬問題の演習、自分専用の問題集の作成・共有を行えるWebアプリです！</p>
+          <p>　模擬問題は各試験・資格ごとに10セット用意されており、ユーザーからのフィードバックをもとにAIが継続的に問題を更新します。</p>
+          <p>　画面上部の演習・再開・作成・編集から、各種画面に移動できます。まずは既存の問題集を演習してみてください、以下に効果的な使い方をまとめています！</p>
+          <div style={{ height: '1em' }} />
+
+          <div>
+            <div onClick={() => setShowTips((v) => !v)}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer', userSelect: 'none', fontWeight: 600 }}>
+              <span>{showTips ? '▼' : '▲'}</span>
+              <span>効果的な使い方</span>
             </div>
-          )}
-        </div>
 
-        <div className="radio-list">
-          {menuOptions.map((option) => {
-            const disabled = isDisabled(option);
-            const reason = disabledReason(option.id);
-            return (
-              <div key={option.id}
-                className={`radio-option ${selected === option.id ? 'selected' : ''} ${disabled ? 'disabled' : ''}`}
-                onClick={() => { if (!disabled) setSelected(option.id); }}>
-                <div className={`radio-circle ${selected === option.id ? 'checked' : ''}`}>
-                  {selected === option.id && <div className="radio-circle-inner" />}
-                </div>
-                <span className="radio-label">
-                  {option.label}
-                  {option.badge && <span className="radio-badge">{option.badge}</span>}
-                  {reason && <span className="radio-badge">（{reason}）</span>}
-                </span>
+            {showTips && (
+              <div style={{ marginTop: '0.5rem' }}>
+                <p style={{ fontWeight: 600 }}>⌨️ キーボードショートカット（PC）</p>
+                <p style={{ paddingLeft: '1.5rem' }}>PCからはキーボードで演習を快適に進められます。</p>
+                <p style={{ paddingLeft: '1.5rem' }}>・1〜9キー：選択肢を選択</p>
+                <p style={{ paddingLeft: '1.5rem' }}>・→ キー：次の問題へ進む／解答を確定</p>
+                <p style={{ paddingLeft: '1.5rem' }}>・← キー：前の問題に戻る</p>
+                <p>　</p>
+                <p style={{ fontWeight: 600 }}>📋 問題数・分野の絞り込み</p>
+                <p style={{ paddingLeft: '1.5rem' }}>デフォルトは実際の試験と同様の問題数で出題されます。問題数の増減や分野ごとの絞り込みも自由に設定できます。</p>
+                <p>　</p>
+                <p style={{ fontWeight: 600 }}>📌 苦手分野に特化した演習</p>
+                <p style={{ paddingLeft: '1.5rem' }}>演習後に間違えた問題を一括で自分専用の問題集に追加できます。1周目の後は苦手な分野に絞って集中演習しましょう。</p>
+                <p>　</p>
+                <p style={{ fontWeight: 600 }}>👍 フィードバックで問題が進化</p>
+                <p style={{ paddingLeft: '1.5rem' }}>各問題にグッド・バッド・コメント機能を搭載。低評価の問題はAIが修正するため、演習するユーザーが増えるほど良問が増えていく仕組みです。</p>
+                <p>　</p>
+                <p style={{ fontWeight: 600 }}>✏️ 自分だけの問題集を作成</p>
+                <p style={{ paddingLeft: '1.5rem' }}>既存の試験・資格以外の問題集も作成可能です。作成方法は2種類あります。</p>
+                <p style={{ paddingLeft: '1.5rem' }}>・手動（GUI）：直感的で簡単。少量の問題作成に最適。</p>
+                <p style={{ paddingLeft: '1.5rem' }}>・CSVアップロード：テンプレートに記入してアップロード。慣れると大量の問題も素早く作成できます。</p>
               </div>
-            );
-          })}
-        </div>
-      </div>
+            )}
+          </div>
 
-      <div className="nav-buttons nav-buttons--right-only">
-        <button className={`btn ${selected ? 'btn-primary' : 'btn-disabled'}`}
-          onClick={handleNext} disabled={!selected}>
-          次へ
-        </button>
+          <div style={{ height: '1em' }} />
+          <p>皆さんのフィードバックをお待ちしています！</p>
+          <p style={{ color: 'var(--text-light)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+            ※未ログイン時の演習履歴・問題集はブラウザのローカルストレージに保存されます。ブラウザのデータを消去すると失われるため、データを永続的に保持したい場合は右上からログインをお願いします。
+          </p>
+        </div>
       </div>
     </div>
   );

@@ -62,10 +62,6 @@ export default function BookmarksPage() {
 
   return (
     <div className="page-container">
-      <header className="header">
-        <Link href="/" className="header-logo">OpenStudy</Link>
-      </header>
-
       <div className="page-body">
         <h2 className="section-title" style={{ textAlign: 'center', fontSize: '1.1rem', marginBottom: '1rem' }}>
           ブックマークした問題集
@@ -104,7 +100,7 @@ export default function BookmarksPage() {
       </div>
 
       <div className="nav-buttons">
-        <button className="btn btn-back" onClick={() => router.back()}>戻る</button>
+        <button className="btn btn-back" onClick={() => router.push('/search')}>戻る</button>
         <button
           className={`btn ${selectedExamId !== null ? 'btn-primary' : 'btn-disabled'}`}
           onClick={handleNext}

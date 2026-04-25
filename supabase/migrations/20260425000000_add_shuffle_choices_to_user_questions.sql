@@ -1,0 +1,2 @@
+ALTER TABLE user_questions
+  ADD COLUMN shuffle_choices BOOLEAN NOT NULL DEFAULT TRUE;

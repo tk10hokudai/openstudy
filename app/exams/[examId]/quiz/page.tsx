@@ -8,8 +8,11 @@ import { useUser } from '@/lib/auth';
 import {
   getProgress, saveProgress as saveProgressStorage, clearProgress,
   saveQuizResult, getCollectionItems, saveReviewState, getReviewState,
+  getLocalCollectionQuestions, getLocalUserQuestionsByIds,
+  saveProgressHint, clearProgressHint,
 } from '@/lib/storage';
 import { Choice, Exam, Question, QuestionGroup, QuizItem } from '@/lib/types';
+import AdOverlay from '@/components/AdOverlay';
 
 type Result = {
   questionId: number;
@@ -95,11 +98,16 @@ export default function QuizPage() {
 
   const collectionTitleParam = searchParams.get('collectionTitle') || '';
   const collectionIdParam = searchParams.get('collectionId') ? Number(searchParams.get('collectionId')) : undefined;
+  const fromParam = searchParams.get('from') || '';
+  const filteredParam = searchParams.get('filtered') === '1';
+  const backToAnswerParam = searchParams.get('backToAnswer');
+  const suspendDest = '/search';
 
   const [exam, setExam] = useState<Exam | null>(null);
   const [quizItems, setQuizItems] = useState<QuizItem[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [showAd, setShowAd] = useState(false);
 
   const [selectedChoiceId, setSelectedChoiceId] = useState<number | null>(null);
   const [selectedChoiceIds, setSelectedChoiceIds] = useState<number[]>([]);
@@ -129,6 +137,17 @@ export default function QuizPage() {
   const [shuffledChoicesMap, setShuffledChoicesMap] = useState<Record<number, Choice[]>>({});
   // sectionId → shuffle_choices（fetchData で設定）
   const sectionShuffleMapRef = useRef<Record<number, boolean>>({});
+  // continue モード時の元モード（retry / user_collection）を保持し、restartUrl 生成に使用
+  const continueOriginalModeRef = useRef<string>('user_collection');
+  // add-to-collection から戻ったとき正誤判定画面を復元するための index（null = 不要）
+  const pendingExplainRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (sessionStorage.getItem('show_ad') === '1') {
+      sessionStorage.removeItem('show_ad');
+      setShowAd(true);
+    }
+  }, []);
 
   useEffect(() => {
     async function fetchData() {
@@ -168,6 +187,94 @@ export default function QuizPage() {
         sectionShuffleMapRef.current = map;
       }
 
+      type RawUqBase = { id: number; question_number: number; question_type: string; max_selections: number; score: number; body_text: string; explanation: string | null; audio_url: string | null; image_url: string | null; correct_answers: string | null; shuffle_choices?: boolean; user_question_choices: { id: number; question_id: number; choice_text: string; image_url: string | null; is_correct: boolean; sort_order: number }[] };
+      function uqToQuizItem(uq: RawUqBase): QuizItem {
+        return {
+          type: 'single' as const,
+          question: {
+            id: uq.id,
+            section_id: null,
+            group_id: null,
+            question_number: uq.question_number,
+            question_type: uq.question_type === 'choice_single' ? 'choice' : (uq.question_type || 'choice'),
+            max_selections: uq.max_selections ?? 1,
+            score: uq.score ?? 1,
+            body_text: uq.body_text,
+            explanation: uq.explanation || '',
+            audio_url: uq.audio_url ?? null,
+            image_url: uq.image_url ?? null,
+            correct_answers: uq.correct_answers ? JSON.parse(uq.correct_answers) : null,
+            choices: uq.user_question_choices
+              .sort((a, b) => a.sort_order - b.sort_order)
+              .map((c) => ({ id: c.id, question_id: c.question_id, choice_text: c.choice_text, image_url: c.image_url, is_correct: c.is_correct })),
+            isUserQuestion: true,
+            shuffle_choices: uq.shuffle_choices ?? true,
+          } as Question,
+        };
+      }
+
+      // ユーザー作成問題集モード（コピー済み user_questions を使用）
+      if (mode === 'user_collection') {
+        if (!collectionIdParam) { setLoading(false); return; }
+
+        // filtered=1: sessionStorage のフィルタ済み ID リストを使用
+        if (filteredParam) {
+          const filterStr = typeof window !== 'undefined' ? sessionStorage.getItem('user_collection_filter') : null;
+          const filter = filterStr ? (JSON.parse(filterStr) as { collectionId: number; questionIds: number[] }) : null;
+          if (filter && filter.collectionId === collectionIdParam) {
+            const savedQIds = filter.questionIds;
+            if (savedQIds.length > 0) {
+              const qMap: Record<number, QuizItem> = {};
+              const rawUqs: RawUqBase[] = !user
+                ? getLocalUserQuestionsByIds(savedQIds)
+                : await (async () => {
+                    const BATCH = 200;
+                    const acc: RawUqBase[] = [];
+                    for (let i = 0; i < savedQIds.length; i += BATCH) {
+                      const { data } = await supabase.from('user_questions').select('*, user_question_choices(*)').in('id', savedQIds.slice(i, i + BATCH));
+                      if (data) acc.push(...(data as RawUqBase[]));
+                    }
+                    return acc;
+                  })();
+              for (const uq of rawUqs) qMap[uq.id] = uqToQuizItem(uq);
+              const items: QuizItem[] = [];
+              for (const id of savedQIds) if (qMap[id]) items.push(qMap[id]);
+              if (items.length > 0) setQuizItems(items);
+            }
+            setLoading(false);
+            return;
+          }
+        }
+
+        if (!user) {
+          const localQs = getLocalCollectionQuestions(collectionIdParam);
+          if (localQs.length > 0) setQuizItems(localQs.map(uqToQuizItem));
+          setLoading(false);
+          return;
+        }
+
+        const allUqs: RawUqBase[] = [];
+        const UQ_PAGE = 1000;
+        let uqFrom = 0;
+        while (true) {
+          const { data } = await supabase
+            .from('user_questions')
+            .select('*, user_question_choices(*)')
+            .eq('collection_id', collectionIdParam)
+            .order('question_number')
+            .range(uqFrom, uqFrom + UQ_PAGE - 1);
+          if (!data || data.length === 0) break;
+          allUqs.push(...(data as RawUqBase[]));
+          if (data.length < UQ_PAGE) break;
+          uqFrom += UQ_PAGE;
+        }
+        if (allUqs.length > 0) {
+          setQuizItems(allUqs.map(uqToQuizItem));
+        }
+        setLoading(false);
+        return;
+      }
+
       // コレクションモードは collectionId からDB取得（URL長制限回避・大量問題対応）
       if (mode === 'collection') {
         if (!collectionIdParam) { setLoading(false); return; }
@@ -200,39 +307,162 @@ export default function QuizPage() {
       if (mode === 'continue' && collectionIdParam) {
         const progress = await getProgress(user, examId, collectionIdParam);
         if (progress) {
-          const qIds = progress.questionIds || [];
-          const gIds = progress.groupIds || [];
-          const items: QuizItem[] = [];
-
-          // 独立問題を復元（BATCH=200 で URL長制限・max_rows を回避）
-          if (qIds.length > 0) {
-            const directQs = await fetchQuestionsByIds(qIds);
-            for (const q of directQs) {
-              items.push({ type: 'single', question: q as Question });
-            }
-          }
-
-          // グループ問題を復元（doSaveProgress は group.id を groupIds に保存する）
-          if (gIds.length > 0) {
-            const { data: groups } = await supabase
-              .from('question_groups').select('*, questions(*, choices(*))').in('id', gIds);
-            if (groups) {
-              for (const g of groups as QuestionGroup[]) {
-                g.questions.sort((a, b) => a.question_number - b.question_number);
-                items.push({ type: 'group', group: g });
-              }
-            }
-          }
-
-          if (items.length > 0) {
-            await applyShuffleMap(items);
-            setQuizItems(items);
-          }
+          const dbToModeCol: Record<string, string> = { retry_wrong: 'retry', favorites_only: 'favorites' };
+          const rawModeCol = progress.mode || 'user_collection';
+          continueOriginalModeRef.current = dbToModeCol[rawModeCol] ?? rawModeCol;
           const savedIdx = progress.currentIndex || 0;
           const savedRes = progress.results || [];
-          setCurrentIndex(savedIdx);
+          let items: QuizItem[] = [];
+
+          // examId='0': user_collection の再開（saved questionIds で絞る。retry 中断に対応）
+          if (examId === '0') {
+            const savedQIds = progress.questionIds || [];
+            if (savedQIds.length > 0) {
+              const qMap: Record<number, QuizItem> = {};
+              const rawUqs: RawUqBase[] = !user
+                ? getLocalUserQuestionsByIds(savedQIds)
+                : await (async () => {
+                    const BATCH = 200;
+                    const acc: RawUqBase[] = [];
+                    for (let i = 0; i < savedQIds.length; i += BATCH) {
+                      const { data } = await supabase.from('user_questions').select('*, user_question_choices(*)').in('id', savedQIds.slice(i, i + BATCH));
+                      if (data) acc.push(...(data as RawUqBase[]));
+                    }
+                    return acc;
+                  })();
+              for (const uq of rawUqs) qMap[uq.id] = uqToQuizItem(uq);
+              for (const id of savedQIds) if (qMap[id]) items.push(qMap[id]);
+            }
+          } else {
+            const qIds = progress.questionIds || [];
+            const gIds = progress.groupIds || [];
+            if (qIds.length > 0) {
+              const directQs = await fetchQuestionsByIds(qIds);
+              for (const q of directQs) items.push({ type: 'single', question: q as Question });
+            }
+            if (gIds.length > 0) {
+              const { data: groups } = await supabase
+                .from('question_groups').select('*, questions(*, choices(*))').in('id', gIds);
+              if (groups) {
+                for (const g of groups as QuestionGroup[]) {
+                  g.questions.sort((a, b) => a.question_number - b.question_number);
+                  items.push({ type: 'group', group: g });
+                }
+              }
+            }
+            if (items.length > 0) await applyShuffleMap(items);
+          }
+
+          if (items.length > 0) setQuizItems(items);
+          const backIdxCol = backToAnswerParam !== null ? Math.min(parseInt(backToAnswerParam), items.length - 1) : null;
+          if (backIdxCol !== null) pendingExplainRef.current = backIdxCol;
+          setCurrentIndex(backIdxCol ?? savedIdx);
           setResults(savedRes);
-          setSavedAnswers(buildSavedAnswers(items, savedRes, savedIdx));
+          setSavedAnswers(buildSavedAnswers(items, savedRes, backIdxCol !== null ? backIdxCol + 1 : savedIdx));
+        }
+        setLoading(false);
+        return;
+      }
+
+      // ---- retry モード: localStorage の問題IDを直接取得（一括取得の max_rows を回避）----
+      if (mode === 'retry') {
+        const retryIds = JSON.parse(localStorage.getItem(`retry_${examId}`) || '[]') as number[];
+        const filtered: QuizItem[] = [];
+        if (retryIds.length > 0) {
+          // examId='0': user_collection のリトライ（全ID が user_questions.id の正の整数）
+          if (examId === '0') {
+            const rawUqs: RawUqBase[] = !user
+              ? getLocalUserQuestionsByIds(retryIds)
+              : await (async () => {
+                  const BATCH = 200;
+                  const acc: RawUqBase[] = [];
+                  for (let i = 0; i < retryIds.length; i += BATCH) {
+                    const { data } = await supabase.from('user_questions').select('*, user_question_choices(*)').in('id', retryIds.slice(i, i + BATCH));
+                    if (data) acc.push(...(data as RawUqBase[]));
+                  }
+                  return acc;
+                })();
+            for (const uq of rawUqs) filtered.push(uqToQuizItem(uq));
+          } else {
+            const retryQs = await fetchQuestionsByIds(retryIds);
+            const soloQs = retryQs.filter((q) => !q.group_id);
+            const groupedQs = retryQs.filter((q) => q.group_id);
+            for (const q of soloQs) filtered.push({ type: 'single', question: q as Question });
+            const groupIds = [...new Set(groupedQs.map((q) => q.group_id as number))];
+            if (groupIds.length > 0) {
+              const rGroups = await fetchGroupsByIds(groupIds);
+              for (const g of rGroups) {
+                g.questions.sort((a, b) => a.question_number - b.question_number);
+                filtered.push({ type: 'group', group: g });
+              }
+            }
+            filtered.sort((a, b) => {
+              const numA = a.type === 'single' ? a.question.question_number : a.group.id;
+              const numB = b.type === 'single' ? b.question.question_number : b.group.id;
+              return numA - numB;
+            });
+          }
+        }
+        setQuizItems(filtered);
+        setLoading(false);
+        return;
+      }
+
+      // ---- review モード: 結果画面からの解答確認 ----
+      if (mode === 'review') {
+        const review = getReviewState(examId);
+        if (!review) { setLoading(false); return; }
+
+        const restoredItems: QuizItem[] = [];
+        if (review.questionIds.length > 0) {
+          const qMap: Record<number, QuizItem> = {};
+          if (review.collectionId) {
+            // user_collection の review: 全ID が user_questions.id
+            const rawUqs: RawUqBase[] = !user
+              ? getLocalUserQuestionsByIds(review.questionIds)
+              : await (async () => {
+                  const BATCH = 200;
+                  const acc: RawUqBase[] = [];
+                  for (let i = 0; i < review.questionIds.length; i += BATCH) {
+                    const { data } = await supabase.from('user_questions').select('*, user_question_choices(*)').in('id', review.questionIds.slice(i, i + BATCH));
+                    if (data) acc.push(...(data as RawUqBase[]));
+                  }
+                  return acc;
+                })();
+            for (const uq of rawUqs) qMap[uq.id] = uqToQuizItem(uq);
+          } else {
+            const qs = await fetchQuestionsByIds(review.questionIds);
+            for (const q of qs) qMap[q.id] = { type: 'single', question: q as Question };
+          }
+          for (const id of review.questionIds) if (qMap[id]) restoredItems.push(qMap[id]);
+        }
+        if (review.groupIds.length > 0) {
+          const gs = await fetchGroupsByIds(review.groupIds);
+          for (const g of gs) {
+            g.questions.sort((a, b) => a.question_number - b.question_number);
+            restoredItems.push({ type: 'group', group: g });
+          }
+        }
+
+        if (restoredItems.length > 0) {
+          await applyShuffleMap(restoredItems);
+          const allSaved = buildSavedAnswers(restoredItems, review.results, restoredItems.length);
+          const lastIndex = restoredItems.length - 1;
+          const lastSaved = allSaved[lastIndex];
+          setQuizItems(restoredItems);
+          setResults(review.results);
+          setCurrentIndex(lastIndex);
+          setSavedAnswers(allSaved);
+          if (lastSaved) {
+            setAnswered(true);
+            setCurrentCorrect(lastSaved.correct);
+            setGroupCorrectCount(lastSaved.groupCorrectCount);
+            setSelectedChoiceId(lastSaved.selectedChoiceId);
+            setSelectedChoiceIds(lastSaved.selectedChoiceIds);
+            setTextInput(lastSaved.textInput);
+            setBlanksInput(lastSaved.blanksInput);
+            setGroupAnswers(lastSaved.groupAnswers);
+          }
         }
         setLoading(false);
         return;
@@ -293,37 +523,13 @@ export default function QuizPage() {
         return;
       }
 
-      // ---- retry モード: localStorage の問題IDを直接取得（一括取得の max_rows を回避）----
-      if (mode === 'retry') {
-        const retryIds = JSON.parse(localStorage.getItem(`retry_${examId}`) || '[]') as number[];
-        const filtered: QuizItem[] = [];
-        if (retryIds.length > 0) {
-          const retryQs = await fetchQuestionsByIds(retryIds);
-          const soloQs = retryQs.filter((q) => !q.group_id);
-          const groupedQs = retryQs.filter((q) => q.group_id);
-          for (const q of soloQs) filtered.push({ type: 'single', question: q as Question });
-          const groupIds = [...new Set(groupedQs.map((q) => q.group_id as number))];
-          if (groupIds.length > 0) {
-            const rGroups = await fetchGroupsByIds(groupIds);
-            for (const g of rGroups) {
-              g.questions.sort((a, b) => a.question_number - b.question_number);
-              filtered.push({ type: 'group', group: g });
-            }
-          }
-          filtered.sort((a, b) => {
-            const numA = a.type === 'single' ? a.question.question_number : a.group.id;
-            const numB = b.type === 'single' ? b.question.question_number : b.group.id;
-            return numA - numB;
-          });
-        }
-        setQuizItems(filtered);
-        setLoading(false);
-        return;
-      }
-
       // ---- continue モード（コレクションなし）: 保存済み ID を直接取得（一括取得の max_rows を回避）----
       if (mode === 'continue') {
         const progress = await getProgress(user, examId);
+        // DB は 'retry_wrong'/'favorites_only' 形式で保存されるため quiz page の mode 値に正規化
+        const dbToMode: Record<string, string> = { retry_wrong: 'retry', favorites_only: 'favorites' };
+        const rawMode = progress?.mode || 'normal';
+        continueOriginalModeRef.current = dbToMode[rawMode] ?? rawMode;
         const savedCurrentIndex = progress?.currentIndex || 0;
         const savedResults: Result[] = progress?.results || [];
         const savedQIds: number[] = progress?.questionIds || [];
@@ -345,54 +551,12 @@ export default function QuizPage() {
           }
         }
 
-        setCurrentIndex(savedCurrentIndex);
+        const backIdx = backToAnswerParam !== null ? Math.min(parseInt(backToAnswerParam), restoredItems.length - 1) : null;
+        if (backIdx !== null) pendingExplainRef.current = backIdx;
+        setCurrentIndex(backIdx ?? savedCurrentIndex);
         setResults(savedResults);
         setQuizItems(restoredItems);
-        setSavedAnswers(buildSavedAnswers(restoredItems, savedResults, savedCurrentIndex));
-        setLoading(false);
-        return;
-      }
-
-      // ---- review モード: 結果画面からの解答確認 ----
-      if (mode === 'review') {
-        const review = getReviewState(examId);
-        if (!review) { setLoading(false); return; }
-
-        const restoredItems: QuizItem[] = [];
-        if (review.questionIds.length > 0) {
-          const qMap: Record<number, QuizItem> = {};
-          const qs = await fetchQuestionsByIds(review.questionIds);
-          for (const q of qs) qMap[q.id] = { type: 'single', question: q as Question };
-          for (const id of review.questionIds) if (qMap[id]) restoredItems.push(qMap[id]);
-        }
-        if (review.groupIds.length > 0) {
-          const gs = await fetchGroupsByIds(review.groupIds);
-          for (const g of gs) {
-            g.questions.sort((a, b) => a.question_number - b.question_number);
-            restoredItems.push({ type: 'group', group: g });
-          }
-        }
-
-        if (restoredItems.length > 0) {
-          await applyShuffleMap(restoredItems);
-          const allSaved = buildSavedAnswers(restoredItems, review.results, restoredItems.length);
-          const lastIndex = restoredItems.length - 1;
-          const lastSaved = allSaved[lastIndex];
-          setQuizItems(restoredItems);
-          setResults(review.results);
-          setCurrentIndex(lastIndex);
-          setSavedAnswers(allSaved);
-          if (lastSaved) {
-            setAnswered(true);
-            setCurrentCorrect(lastSaved.correct);
-            setGroupCorrectCount(lastSaved.groupCorrectCount);
-            setSelectedChoiceId(lastSaved.selectedChoiceId);
-            setSelectedChoiceIds(lastSaved.selectedChoiceIds);
-            setTextInput(lastSaved.textInput);
-            setBlanksInput(lastSaved.blanksInput);
-            setGroupAnswers(lastSaved.groupAnswers);
-          }
-        }
+        setSavedAnswers(buildSavedAnswers(restoredItems, savedResults, backIdx !== null ? backIdx + 1 : savedCurrentIndex));
         setLoading(false);
         return;
       }
@@ -427,8 +591,14 @@ export default function QuizPage() {
     const map: Record<number, Choice[]> = {};
     const shuffleMap = sectionShuffleMapRef.current;
     for (const item of quizItems) {
-      const sectionId = item.type === 'single' ? (item.question.section_id ?? -1) : item.group.section_id;
-      const shuffleable = shuffleMap[sectionId] ?? true;
+      let shuffleable: boolean;
+      if (item.type === 'single' && item.question.section_id == null) {
+        // user_question: 問題ごとの shuffle_choices を参照
+        shuffleable = item.question.shuffle_choices ?? true;
+      } else {
+        const sectionId = item.type === 'single' ? (item.question.section_id ?? -1) : item.group.section_id;
+        shuffleable = shuffleMap[sectionId] ?? true;
+      }
       if (!shuffleable) continue;
       const questions = item.type === 'single' ? [item.question] : item.group.questions;
       for (const q of questions) {
@@ -484,6 +654,25 @@ export default function QuizPage() {
     }
   }, [answered, currentIndex, user, quizItems]);
 
+  // add-to-collection から戻ったとき、正誤判定画面を復元する
+  useEffect(() => {
+    if (loading) return;
+    const idx = pendingExplainRef.current;
+    if (idx === null) return;
+    const a = savedAnswers[idx];
+    if (!a) return;
+    pendingExplainRef.current = null;
+    setAnswered(true);
+    setCurrentCorrect(a.correct);
+    setGroupCorrectCount(a.groupCorrectCount);
+    setSelectedChoiceId(a.selectedChoiceId);
+    setSelectedChoiceIds(a.selectedChoiceIds);
+    setTextInput(a.textInput);
+    setBlanksInput(a.blanksInput);
+    setGroupAnswers(a.groupAnswers);
+    setShowExplanation(true);
+  }, [loading, savedAnswers]);
+
   async function getSectionAndChildIds(parentId: number): Promise<number[]> {
     const ids = [parentId];
     const { data: children } = await supabase
@@ -505,17 +694,22 @@ export default function QuizPage() {
       if (item.type === 'single') questionIds.push(item.question.id);
       else groupIds.push(item.group.id);
     }
-    // 戻るで currentIndex が後退していても、最後に解答した問題の次から再開する
     const answeredKeys = Object.keys(savedAnswers).map(Number);
-    const resumeIndex = answeredKeys.length > 0 ? Math.max(...answeredKeys) + 1 : currentIndex;
-    // 全問解答済みなら中断データを残さない（完了扱い）
-    if (resumeIndex >= quizItems.length) {
-      await clearProgress(user, examId, collectionIdParam);
-      return;
+    const rawResumeIndex = answeredKeys.length > 0 ? Math.max(...answeredKeys) + 1 : currentIndex;
+    // 全問回答済みでもクリアせず最終問題を指して保存する（+ボタン経由のコレクション追加後に
+    // mode=continue で戻ったとき進捗が見つからない問題を防ぐ）
+    const resumeIndex = Math.min(rawResumeIndex, quizItems.length - 1);
+    let totalQuestions = 0;
+    for (const item of quizItems) {
+      if (item.type === 'single') totalQuestions++;
+      else totalQuestions += item.group.questions.length;
     }
+    const currentQuestionNum = results.length + 1;
+    saveProgressHint(examId, collectionIdParam, currentQuestionNum, totalQuestions);
     await saveProgressStorage(user, examId, {
       mode, sectionId: null, questionIds, groupIds,
       currentIndex: resumeIndex, results, totalItems: quizItems.length,
+      totalQuestions,
       collectionId: collectionIdParam,
     });
   }, [user, examId, mode, quizItems, currentIndex, results, savedAnswers, collectionIdParam]);
@@ -613,6 +807,7 @@ export default function QuizPage() {
         router.push(`/exams/${examId}/result`);
       } else {
         clearProgress(user, examId, collectionIdParam);
+        clearProgressHint(examId, collectionIdParam);
         saveQuizResult(examId, results);
         // 結果画面からの解答確認用に review state を保存
         const rQIds: number[] = [];
@@ -621,11 +816,25 @@ export default function QuizPage() {
           if (item.type === 'single') rQIds.push(item.question.id);
           else rGIds.push(item.group.id);
         }
-        let restartUrl = `/exams/${examId}/quiz?mode=${mode}`;
-        if (sectionsParam) restartUrl += `&sections=${sectionsParam}`;
-        if (collectionTitleParam) restartUrl += `&collectionTitle=${encodeURIComponent(collectionTitleParam)}`;
-        if (collectionIdParam) restartUrl += `&collectionId=${collectionIdParam}`;
-        saveReviewState(examId, { questionIds: rQIds, groupIds: rGIds, results, collectionTitle: collectionTitleParam || undefined, restartUrl });
+        let restartUrl: string;
+        if (collectionIdParam) {
+          // はじめから = 直前に解いていたデータセットをそのまま再出題
+          // continue の場合は中断前の元モードを使用
+          const restartMode = mode === 'continue' ? continueOriginalModeRef.current : mode;
+          restartUrl = `/exams/${examId}/quiz?mode=${restartMode}&collectionId=${collectionIdParam}`;
+          if (collectionTitleParam) restartUrl += `&collectionTitle=${encodeURIComponent(collectionTitleParam)}`;
+          // user_collection: 同じ問題 ID を sessionStorage に保存して filtered=1 で再出題
+          if (restartMode === 'user_collection') {
+            const replayIds = quizItems.map((item) => (item.type === 'single' ? item.question.id : null)).filter((id): id is number => id !== null);
+            sessionStorage.setItem('user_collection_filter', JSON.stringify({ collectionId: collectionIdParam, questionIds: replayIds }));
+            restartUrl += '&filtered=1';
+          }
+        } else {
+          const effectiveMode = mode === 'continue' ? continueOriginalModeRef.current : mode;
+          restartUrl = `/exams/${examId}/quiz?mode=${effectiveMode}`;
+          if (sectionsParam) restartUrl += `&sections=${sectionsParam}`;
+        }
+        saveReviewState(examId, { questionIds: rQIds, groupIds: rGIds, results, collectionTitle: collectionTitleParam || undefined, restartUrl, collectionId: collectionIdParam });
         router.push(`/exams/${examId}/result`);
       }
     } else { goToNext(); }
@@ -679,7 +888,17 @@ export default function QuizPage() {
       if (mode === 'review') {
         router.push(`/exams/${examId}/result`);
       } else {
-        doSaveProgress(); router.back();
+        doSaveProgress();
+        if (mode === 'user_collection' && collectionIdParam) {
+          let backUrl = `/collections/${collectionIdParam}/sections`;
+          if (collectionTitleParam) backUrl += `?collectionTitle=${encodeURIComponent(collectionTitleParam)}`;
+          router.push(backUrl);
+        } else if (mode === 'normal' || mode === 'retry') {
+          router.push(`/exams/${examId}/sections`);
+        } else {
+          // mode='continue' (with or without collectionId) also falls here — known limitation
+          router.push('/search');
+        }
       }
     }
   };
@@ -712,15 +931,30 @@ export default function QuizPage() {
     }
   };
 
-  const handleAddToCollection = (questionId: number) => {
+  const buildReturnTo = () => {
+    let base = `/exams/${examId}/quiz?mode=continue`;
+    if (collectionIdParam) base += `&collectionId=${collectionIdParam}`;
+    if (collectionTitleParam) base += `&collectionTitle=${encodeURIComponent(collectionTitleParam)}`;
+    if (fromParam) base += `&from=${fromParam}`;
+    base += `&backToAnswer=${currentIndex}`;
+    return base;
+  };
+
+  const handleAddToCollection = (questionId: number, isUserQuestion = false) => {
     doSaveProgress().then(() => {
-      router.push(`/exams/${examId}/add-to-collection?questionIds=${questionId}&returnTo=/exams/${examId}/quiz?mode=continue`);
+      let url = `/exams/${examId}/add-to-collection?questionIds=${questionId}&returnTo=${encodeURIComponent(buildReturnTo())}`;
+      if (isUserQuestion) url += '&uq=1';
+      if (isUserQuestion && collectionIdParam) url += `&excludeCollectionId=${collectionIdParam}`;
+      router.push(url);
     });
   };
 
-  const handleAddGroupToCollection = (questionIds: number[]) => {
+  const handleAddGroupToCollection = (questionIds: number[], isUserQuestion = false) => {
     doSaveProgress().then(() => {
-      router.push(`/exams/${examId}/add-to-collection?questionIds=${questionIds.join(',')}&returnTo=/exams/${examId}/quiz?mode=continue`);
+      let url = `/exams/${examId}/add-to-collection?questionIds=${questionIds.join(',')}&returnTo=${encodeURIComponent(buildReturnTo())}`;
+      if (isUserQuestion) url += '&uq=1';
+      if (isUserQuestion && collectionIdParam) url += `&excludeCollectionId=${collectionIdParam}`;
+      router.push(url);
     });
   };
 
@@ -784,11 +1018,11 @@ export default function QuizPage() {
   }, [answered, currentIndex, quizItems, selectedChoiceId, selectedChoiceIds, textInput, blanksInput, groupAnswers]);
 
   if (loading) {
-    return (<div className="page-container"><header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
-      <div className="page-body"><p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>問題を読み込み中...</p></div></div>);
+    return (<>{showAd && <AdOverlay onClose={() => setShowAd(false)} />}<div className="page-container">
+      <div className="page-body"><p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>問題を読み込み中...</p></div></div></>);
   }
   if (quizItems.length === 0) {
-    return (<div className="page-container"><header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
+    return (<div className="page-container">
       <div className="page-body"><p style={{ textAlign: 'center', padding: '2rem' }}>問題が見つかりません</p></div>
       <div className="nav-buttons"><button className="btn btn-back" onClick={() => router.back()}>戻る</button></div></div>);
   }
@@ -800,13 +1034,11 @@ export default function QuizPage() {
 
   return (
     <div className="page-container">
-      <header className="header">
-        <Link href="/" className="header-logo">OpenStudy</Link>
-        <div className="header-subtitle">
-          問題 {currentQuestionNum}{currentItem.type === 'group' ? `〜${currentQuestionNum + currentItem.group.questions.length - 1}` : ''} / {totalQuestions}
-        </div>
-      </header>
+      {showAd && <AdOverlay onClose={() => setShowAd(false)} />}
       <div className="page-body">
+        <p className="header-subtitle" style={{ marginBottom: '0.5rem' }}>
+          問題 {currentQuestionNum}{currentItem.type === 'group' ? `〜${currentQuestionNum + currentItem.group.questions.length - 1}` : ''} / {totalQuestions}
+        </p>
         <div className="exam-name-bar">{collectionTitleParam || exam?.title}</div>
         {currentItem.type === 'single' ? renderSingle(currentItem.question) : renderGroup(currentItem.group)}
       </div>
@@ -814,7 +1046,7 @@ export default function QuizPage() {
         <button className="btn btn-back" onClick={handleBack}>戻る</button>
         {mode === 'review'
           ? <button className="btn btn-back" onClick={() => router.push(`/exams/${examId}/result`)}>結果</button>
-          : <button className="btn btn-back" onClick={() => { doSaveProgress(); router.push('/'); }}>中断</button>
+          : <button className="btn btn-back" onClick={() => { doSaveProgress(); window.scrollTo(0, 0); router.push(suspendDest); }}>中断</button>
         }
         <button className={`btn ${canProceed() ? 'btn-primary' : 'btn-disabled'}`} onClick={handleNext} disabled={!canProceed()}>次へ</button>
       </div>
@@ -911,7 +1143,7 @@ export default function QuizPage() {
 
     return (<>
       <div className={`result-banner ${currentCorrect ? 'correct' : (isMultiBlank && groupCorrectCount > 0 ? 'correct' : 'incorrect')}`}>{bannerText}</div>
-      {renderFeedbackRow(q.id)}
+      {!q.isUserQuestion && renderFeedbackRow(q.id)}
       <div className="answer-info">
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <span className="answer-text" onClick={() => setShowExplanation(!showExplanation)}>{showExplanation ? '▼' : '▲'}正解は{correctText}です</span>
@@ -919,7 +1151,7 @@ export default function QuizPage() {
             （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />解説を常に表示）
           </label>
         </div>
-        <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id)}>＋</button>
+        <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id, q.isUserQuestion)}>＋</button>
       </div>
       {showExplanation && <div className="explanation-box">{q.explanation}</div>}
     </>);
@@ -976,7 +1208,7 @@ export default function QuizPage() {
               （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />解説を常に表示）
             </label>
           </div>
-          <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id)}>＋</button>
+          <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddToCollection(q.id, q.isUserQuestion)}>＋</button>
         </div>
         {showExplanation && <div className="explanation-box">{q.explanation}</div>}
       </>)}
@@ -1002,7 +1234,7 @@ export default function QuizPage() {
               （<input type="checkbox" checked={autoOpen} onChange={(e) => { const v = e.target.checked; setAutoOpen(v); localStorage.setItem('quiz_auto_open', String(v)); }} style={{ margin: '0 0.15rem' }} />解説を常に表示）
             </label>
           </div>
-          <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddGroupToCollection(group.questions.map((q) => q.id))}>＋</button>
+          <button className="favorite-btn" style={{ color: 'var(--primary)' }} onClick={() => handleAddGroupToCollection(group.questions.map((q) => q.id), group.questions[0]?.isUserQuestion ?? false)}>＋</button>
         </div>
         {showExplanation && <div className="explanation-box">{group.questions.map((q, i) => (
           <div key={q.id} style={{ marginBottom: i < group.questions.length - 1 ? '1rem' : 0 }}><p style={{ fontWeight: 600, marginBottom: '0.25rem' }}>Questions {i + 1}</p><p>{q.explanation}</p></div>

@@ -1,12 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { useUser } from '@/lib/auth';
 import { getCollections, createCollection, addToCollection } from '@/lib/storage';
 
-export default function AddToCollectionPage() {
+function AddToCollectionForm() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -15,30 +14,33 @@ export default function AddToCollectionPage() {
 
   const questionIdsStr = searchParams.get('questionIds') || '';
   const returnTo = searchParams.get('returnTo') || `/exams/${examId}/quiz`;
+  const isBulk = searchParams.get('bulk') === '1';
+  const isUserQuestion = searchParams.get('uq') === '1';
+  const excludeCollectionIdRaw = searchParams.get('excludeCollectionId');
+  const excludeCollectionId = excludeCollectionIdRaw ? Number(excludeCollectionIdRaw) : null;
   const questionIds = questionIdsStr.split(',').map(Number).filter(Boolean);
 
   const [collections, setCollections] = useState<{ id: number; title: string }[]>([]);
   const [selectedId, setSelectedId] = useState<number | 'new' | null>(null);
   const [newTitle, setNewTitle] = useState('');
   const [loading, setLoading] = useState(true);
-  const [done, setDone] = useState(false);
-  const [addedTo, setAddedTo] = useState('');
 
   useEffect(() => {
     async function load() {
       const data = await getCollections(user);
-      setCollections(data);
+      const filtered = excludeCollectionId != null ? data.filter((c) => c.id !== excludeCollectionId) : data;
+      setCollections(filtered);
       // コレクションがなければ新規入力を自動選択
-      if (data.length === 0) setSelectedId('new');
+      if (filtered.length === 0) setSelectedId('new');
       setLoading(false);
     }
     load();
-  }, [user]);
+  }, [user, excludeCollectionId]);
 
   const canProceed = selectedId === 'new' ? newTitle.trim().length > 0 : selectedId !== null;
 
   const handleNext = async () => {
-    if (!canProceed || questionIds.length === 0 || done) return;
+    if (!canProceed || questionIds.length === 0) return;
 
     let collectionId: number | null = null;
     let title = '';
@@ -52,17 +54,15 @@ export default function AddToCollectionPage() {
     }
 
     if (collectionId === null) return;
-    await addToCollection(user, collectionId, questionIds);
-    setAddedTo(title);
-    setDone(true);
-    setTimeout(() => router.push(returnTo), 1200);
+    await addToCollection(user, collectionId, questionIds, isUserQuestion);
+    if (isBulk) sessionStorage.setItem('show_ad_result', '1');
+    router.push(returnTo);
   };
 
   if (loading) {
     return (
       <div className="page-container">
-        <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
-        <div className="page-body">
+<div className="page-body">
           <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>読み込み中...</p>
         </div>
       </div>
@@ -71,16 +71,8 @@ export default function AddToCollectionPage() {
 
   return (
     <div className="page-container">
-      <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
-
       <div className="page-body">
         <h2 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '1rem' }}>問題を以下の問題集に追加</h2>
-
-        {done && (
-          <p style={{ textAlign: 'center', color: 'var(--primary)', marginBottom: '1rem', fontWeight: 500 }}>
-            「{addedTo}」に追加しました
-          </p>
-        )}
 
         <div style={{ border: '1.5px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }}>
           {/* 新しい問題集（テキスト入力） */}
@@ -137,11 +129,19 @@ export default function AddToCollectionPage() {
 
       <div className="nav-buttons">
         <button className="btn btn-back" onClick={() => router.push(returnTo)}>戻る</button>
-        <button className={`btn ${canProceed && !done ? 'btn-primary' : 'btn-disabled'}`}
-          onClick={handleNext} disabled={!canProceed || done}>
+        <button className={`btn ${canProceed ? 'btn-primary' : 'btn-disabled'}`}
+          onClick={handleNext} disabled={!canProceed}>
           次へ
         </button>
       </div>
     </div>
+  );
+}
+
+export default function AddToCollectionPage() {
+  return (
+    <Suspense>
+      <AddToCollectionForm />
+    </Suspense>
   );
 }

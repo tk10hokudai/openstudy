@@ -137,21 +137,23 @@ export default function SectionsPage() {
       })
       .map((s) => `${s.id}:${s.requestedCount}`);
 
-    router.push(`/exams/${examId}/quiz?mode=normal&sections=${selected.join(',')}`);
+    const url = `/exams/${examId}/quiz?mode=normal&sections=${selected.join(',')}&from=search`;
+    sessionStorage.setItem('show_ad', '1');
+    window.scrollTo(0, 0);
+    router.push(url);
   };
 
   // セクションが0件なら直接演習画面へ
   useEffect(() => {
     if (!loading && sections.length === 0) {
-      router.push(`/exams/${examId}/quiz?mode=normal`);
+      router.push(`/exams/${examId}/quiz?mode=normal&from=search`);
     }
   }, [loading, sections, examId, router]);
 
   if (loading) {
     return (
       <div className="page-container">
-        <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
-        <div className="page-body">
+<div className="page-body">
           <p style={{ color: 'var(--text-light)', textAlign: 'center', padding: '2rem' }}>読み込み中...</p>
         </div>
       </div>
@@ -164,8 +166,6 @@ export default function SectionsPage() {
 
   return (
     <div className="page-container">
-      <header className="header"><Link href="/" className="header-logo">OpenStudy</Link></header>
-
       <div className="page-body">
         <div className="exam-name-bar">{exam?.title}</div>
 
@@ -236,7 +236,7 @@ export default function SectionsPage() {
       </div>
 
       <div className="nav-buttons">
-        <button className="btn btn-back" onClick={() => router.back()}>戻る</button>
+        <button className="btn btn-back" onClick={() => router.push('/search')}>戻る</button>
         <button className={`btn ${canProceed ? 'btn-primary' : 'btn-disabled'}`}
           onClick={handleNext} disabled={!canProceed}>
           次へ

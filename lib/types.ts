@@ -39,6 +39,8 @@ export type Question = {
   image_url: string | null;
   correct_answers: Record<string, string> | null;
   choices: Choice[];
+  isUserQuestion?: boolean;
+  shuffle_choices?: boolean;
 };
 
 export type Choice = {
@@ -69,4 +71,21 @@ export type UserCollectionItem = {
   collection_id: number;
   question_id: number;
   added_at: string;
+};
+
+// ============================================
+// Phase 6: ユーザー作成問題
+// ============================================
+export type QuestionDraft = {
+  category: string;
+  body_text: string;
+  explanation: string;
+  choices: { choice_text: string; is_correct: boolean; sort_order: number }[];
+};
+
+export type CreateDraft = {
+  method: 'manual' | 'csv_create' | 'csv_upload';
+  name: string;
+  type: 'choice_single';
+  questions: QuestionDraft[];
 };

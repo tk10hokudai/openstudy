@@ -67,67 +67,349 @@ export async function createCollection(user: User | null, title: string): Promis
   return data.id;
 }
 
+// localStorage に保存するユーザー問題の型
+type LocalUserQuestion = {
+  id: number;
+  collection_id: number;
+  question_number: number;
+  question_type: string;
+  category?: string | null;
+  max_selections: number;
+  score: number;
+  body_text: string;
+  explanation: string | null;
+  audio_url: string | null;
+  image_url: string | null;
+  correct_answers: string | null;
+  shuffle_choices?: boolean;
+  user_question_choices: {
+    id: number;
+    question_id: number;
+    choice_text: string;
+    image_url: string | null;
+    is_correct: boolean;
+    sort_order: number;
+  }[];
+};
+
+function getLocalUserQuestions(): LocalUserQuestion[] {
+  if (typeof window === 'undefined') return [];
+  return JSON.parse(localStorage.getItem('local_user_questions') || '[]');
+}
+
+// 問題を問題集にコピーして追加（参照ではなくコピー）
 export async function addToCollection(
   user: User | null,
   collectionId: number,
-  questionIds: number[]
+  questionIds: number[],
+  sourceIsUser = false
 ): Promise<void> {
-  if (!user) {
-    const key = `collection_items_${collectionId}`;
-    const existing: number[] = JSON.parse(localStorage.getItem(key) || '[]');
-    const merged = Array.from(new Set([...existing, ...questionIds]));
-    localStorage.setItem(key, JSON.stringify(merged));
+  if (questionIds.length === 0) return;
+
+  // ソースが user_questions の場合（自分の問題集 → 別の問題集）
+  if (sourceIsUser) {
+    type FetchedUQ = {
+      id: number; question_type: string; category: string | null;
+      max_selections: number; score: number; body_text: string;
+      explanation: string | null; audio_url: string | null; image_url: string | null;
+      correct_answers: string | null; shuffle_choices: boolean;
+      user_question_choices: { choice_text: string; image_url: string | null; is_correct: boolean; sort_order: number }[];
+    };
+    const BATCH = 200;
+
+    if (!user) {
+      const allLocal = getLocalUserQuestions();
+      const sourceQs = questionIds.map((id) => allLocal.find((q) => q.id === id)).filter((q): q is LocalUserQuestion => q != null);
+      const existing = allLocal;
+      const maxId = existing.length > 0 ? Math.max(...existing.map((q) => q.id)) : 0;
+      const colQuestions = existing.filter((q) => q.collection_id === collectionId);
+      const maxQNum = colQuestions.length > 0 ? Math.max(...colQuestions.map((q) => q.question_number)) : 0;
+      const allChoiceIds = existing.flatMap((q) => q.user_question_choices.map((c) => c.id));
+      const maxChoiceId = allChoiceIds.length > 0 ? Math.max(...allChoiceIds) : 0;
+      let idCounter = maxId + 1;
+      let qNumCounter = maxQNum + 1;
+      let choiceIdCounter = maxChoiceId + 1;
+      const toAdd: LocalUserQuestion[] = sourceQs.map((q) => {
+        const localId = idCounter++;
+        return {
+          id: localId,
+          collection_id: collectionId,
+          question_number: qNumCounter++,
+          question_type: q.question_type,
+          category: q.category,
+          max_selections: q.max_selections,
+          score: q.score,
+          body_text: q.body_text,
+          explanation: q.explanation,
+          audio_url: q.audio_url,
+          image_url: q.image_url,
+          correct_answers: q.correct_answers,
+          shuffle_choices: q.shuffle_choices ?? true,
+          user_question_choices: (q.user_question_choices || []).map((c) => ({
+            id: choiceIdCounter++,
+            question_id: localId,
+            choice_text: c.choice_text,
+            image_url: c.image_url || null,
+            is_correct: c.is_correct,
+            sort_order: c.sort_order,
+          })),
+        };
+      });
+      localStorage.setItem('local_user_questions', JSON.stringify([...existing, ...toAdd]));
+      return;
+    }
+
+    // DB ユーザー: user_questions から取得
+    const sourceQs: FetchedUQ[] = [];
+    for (let i = 0; i < questionIds.length; i += BATCH) {
+      const { data } = await supabase
+        .from('user_questions')
+        .select('id, question_type, category, max_selections, score, body_text, explanation, audio_url, image_url, correct_answers, shuffle_choices, user_question_choices(choice_text, image_url, is_correct, sort_order)')
+        .in('id', questionIds.slice(i, i + BATCH));
+      if (data) sourceQs.push(...(data as FetchedUQ[]));
+    }
+    if (sourceQs.length === 0) return;
+
+    const { data: existingUqs } = await supabase
+      .from('user_questions').select('question_number')
+      .eq('collection_id', collectionId).order('question_number', { ascending: false }).limit(1);
+    const maxQNum = existingUqs?.[0]?.question_number ?? 0;
+
+    const uqRows = sourceQs.map((q, i) => ({
+      user_id: user.id,
+      collection_id: collectionId,
+      question_number: maxQNum + i + 1,
+      question_type: q.question_type,
+      category: q.category,
+      body_text: q.body_text,
+      explanation: q.explanation,
+      audio_url: q.audio_url,
+      image_url: q.image_url,
+      max_selections: q.max_selections,
+      score: q.score,
+      correct_answers: q.correct_answers,
+      shuffle_choices: q.shuffle_choices ?? true,
+    }));
+
+    const { data: insertedUqs } = await supabase.from('user_questions').insert(uqRows).select('id');
+    if (!insertedUqs || insertedUqs.length === 0) return;
+
+    const choiceRows: { question_id: number; choice_text: string; image_url: string | null; is_correct: boolean; sort_order: number }[] = [];
+    for (let i = 0; i < sourceQs.length; i++) {
+      const uqId = insertedUqs[i]?.id;
+      if (!uqId) continue;
+      (sourceQs[i].user_question_choices || []).forEach((c) => {
+        choiceRows.push({ question_id: uqId, choice_text: c.choice_text, image_url: c.image_url || null, is_correct: c.is_correct, sort_order: c.sort_order });
+      });
+    }
+    if (choiceRows.length > 0) await supabase.from('user_question_choices').insert(choiceRows);
     return;
   }
-  const items = questionIds.map((qId) => ({
+
+  // Supabase から問題データを取得（ログイン不要の公開データ）
+  const BATCH = 200;
+  type FetchedQuestion = {
+    id: number; section_id: number | null; group_id: number | null;
+    question_type: string; max_selections: number; score: number;
+    body_text: string; explanation: string | null; audio_url: string | null;
+    image_url: string | null; correct_answers: string | null;
+    choices: { choice_text: string; image_url: string | null; is_correct: boolean }[];
+  };
+  const fetchedQuestions: FetchedQuestion[] = [];
+  for (let i = 0; i < questionIds.length; i += BATCH) {
+    const { data } = await supabase
+      .from('questions')
+      .select('id, section_id, group_id, question_type, max_selections, score, body_text, explanation, audio_url, image_url, correct_answers, choices(choice_text, image_url, is_correct)')
+      .in('id', questionIds.slice(i, i + BATCH));
+    if (data) fetchedQuestions.push(...(data as FetchedQuestion[]));
+  }
+  if (fetchedQuestions.length === 0) return;
+
+  // section_id → section title のマップを構築
+  // group 問題はグループ経由で section_id を取得
+  const directSectionIds = [...new Set(fetchedQuestions.map((q) => q.section_id).filter((id): id is number => id != null))];
+  const groupIds = [...new Set(fetchedQuestions.map((q) => q.group_id).filter((id): id is number => id != null))];
+
+  let groupSectionMap: Map<number, number> = new Map(); // group_id → section_id
+  if (groupIds.length > 0) {
+    for (let i = 0; i < groupIds.length; i += BATCH) {
+      const { data } = await supabase
+        .from('question_groups')
+        .select('id, section_id')
+        .in('id', groupIds.slice(i, i + BATCH));
+      if (data) data.forEach((g: { id: number; section_id: number }) => groupSectionMap.set(g.id, g.section_id));
+    }
+  }
+
+  const allSectionIds = [...new Set([
+    ...directSectionIds,
+    ...Array.from(groupSectionMap.values()),
+  ])];
+  let sectionTitleMap: Map<number, string> = new Map(); // section_id → title
+  let sectionShuffleMap: Map<number, boolean> = new Map(); // section_id → shuffle_choices
+  if (allSectionIds.length > 0) {
+    for (let i = 0; i < allSectionIds.length; i += BATCH) {
+      const { data } = await supabase
+        .from('exam_sections')
+        .select('id, title, shuffle_choices')
+        .in('id', allSectionIds.slice(i, i + BATCH));
+      if (data) data.forEach((s: { id: number; title: string; shuffle_choices: boolean }) => {
+        sectionTitleMap.set(s.id, s.title);
+        sectionShuffleMap.set(s.id, s.shuffle_choices ?? true);
+      });
+    }
+  }
+
+  function getCategoryForQuestion(q: FetchedQuestion): string | null {
+    const sectionId = q.section_id ?? (q.group_id != null ? groupSectionMap.get(q.group_id) ?? null : null);
+    return sectionId != null ? (sectionTitleMap.get(sectionId) ?? null) : null;
+  }
+
+  function getShuffleForQuestion(q: FetchedQuestion): boolean {
+    const sectionId = q.section_id ?? (q.group_id != null ? groupSectionMap.get(q.group_id) ?? null : null);
+    return sectionId != null ? (sectionShuffleMap.get(sectionId) ?? true) : true;
+  }
+
+  if (!user) {
+    const existing = getLocalUserQuestions();
+    const maxId = existing.length > 0 ? Math.max(...existing.map((q) => q.id)) : 0;
+    const colQuestions = existing.filter((q) => q.collection_id === collectionId);
+    const maxQNum = colQuestions.length > 0 ? Math.max(...colQuestions.map((q) => q.question_number)) : 0;
+    const allChoiceIds = existing.flatMap((q) => q.user_question_choices.map((c) => c.id));
+    const maxChoiceId = allChoiceIds.length > 0 ? Math.max(...allChoiceIds) : 0;
+    let idCounter = maxId + 1;
+    let qNumCounter = maxQNum + 1;
+    let choiceIdCounter = maxChoiceId + 1;
+    const toAdd: LocalUserQuestion[] = fetchedQuestions.map((q) => {
+      const localId = idCounter++;
+      return {
+        id: localId,
+        collection_id: collectionId,
+        question_number: qNumCounter++,
+        question_type: q.question_type,
+        category: getCategoryForQuestion(q),
+        max_selections: q.max_selections,
+        score: q.score,
+        body_text: q.body_text,
+        explanation: q.explanation,
+        audio_url: q.audio_url,
+        image_url: q.image_url,
+        correct_answers: q.correct_answers,
+        shuffle_choices: getShuffleForQuestion(q),
+        user_question_choices: (q.choices || []).map((c, idx) => ({
+          id: choiceIdCounter++,
+          question_id: localId,
+          choice_text: c.choice_text,
+          image_url: c.image_url || null,
+          is_correct: c.is_correct,
+          sort_order: idx + 1,
+        })),
+      };
+    });
+    localStorage.setItem('local_user_questions', JSON.stringify([...existing, ...toAdd]));
+    return;
+  }
+
+  // DB: 現在の最大 question_number を取得
+  const { data: existingUqs } = await supabase
+    .from('user_questions')
+    .select('question_number')
+    .eq('collection_id', collectionId)
+    .order('question_number', { ascending: false })
+    .limit(1);
+  const maxQNum = existingUqs?.[0]?.question_number ?? 0;
+
+  // user_questions に一括 insert
+  const uqRows = fetchedQuestions.map((q, i) => ({
+    user_id: user.id,
     collection_id: collectionId,
-    question_id: qId,
+    question_number: maxQNum + i + 1,
+    question_type: q.question_type,
+    category: getCategoryForQuestion(q),
+    body_text: q.body_text,
+    explanation: q.explanation,
+    audio_url: q.audio_url,
+    image_url: q.image_url,
+    max_selections: q.max_selections,
+    score: q.score,
+    correct_answers: q.correct_answers ? JSON.stringify(q.correct_answers) : null,
+    shuffle_choices: getShuffleForQuestion(q),
   }));
-  // upsert で重複を無視
-  for (const item of items) {
-    await supabase.from('user_collection_items').upsert(item, { onConflict: 'collection_id,question_id' });
+
+  const { data: insertedUqs } = await supabase
+    .from('user_questions')
+    .insert(uqRows)
+    .select('id');
+
+  if (!insertedUqs || insertedUqs.length === 0) return;
+
+  // user_question_choices に一括 insert
+  const choiceRows: { question_id: number; choice_text: string; image_url: string | null; is_correct: boolean; sort_order: number }[] = [];
+  for (let i = 0; i < fetchedQuestions.length; i++) {
+    const uqId = insertedUqs[i]?.id;
+    if (!uqId) continue;
+    (fetchedQuestions[i].choices || []).forEach((c, idx) => {
+      choiceRows.push({ question_id: uqId, choice_text: c.choice_text, image_url: c.image_url || null, is_correct: c.is_correct, sort_order: idx + 1 });
+    });
+  }
+  if (choiceRows.length > 0) {
+    await supabase.from('user_question_choices').insert(choiceRows);
   }
 }
 
+// コレクションの user_questions ID 一覧を取得
 export async function getCollectionItems(user: User | null, collectionId: number): Promise<number[]> {
   if (!user) {
-    return JSON.parse(localStorage.getItem(`collection_items_${collectionId}`) || '[]');
+    return getLocalUserQuestions()
+      .filter((q) => q.collection_id === collectionId)
+      .sort((a, b) => a.question_number - b.question_number)
+      .map((q) => q.id);
   }
-  // max_rows=1000 を超える件数に対応するためページネーションで全件取得
   const allIds: number[] = [];
   const PAGE = 1000;
   let from = 0;
   while (true) {
     const { data } = await supabase
-      .from('user_collection_items')
-      .select('question_id')
+      .from('user_questions')
+      .select('id')
       .eq('collection_id', collectionId)
+      .order('question_number')
       .range(from, from + PAGE - 1);
     if (!data || data.length === 0) break;
-    allIds.push(...data.map((d) => d.question_id));
+    allIds.push(...data.map((d) => d.id));
     if (data.length < PAGE) break;
     from += PAGE;
   }
   return allIds;
 }
 
+// コレクションから問題を削除（user_questions から削除）
 export async function removeFromCollection(
   user: User | null,
   collectionId: number,
   questionIds: number[]
 ): Promise<void> {
   if (!user) {
-    const key = `collection_items_${collectionId}`;
-    const existing: number[] = JSON.parse(localStorage.getItem(key) || '[]');
-    const filtered = existing.filter((id) => !questionIds.includes(id));
-    localStorage.setItem(key, JSON.stringify(filtered));
+    const filtered = getLocalUserQuestions().filter(
+      (q) => !(q.collection_id === collectionId && questionIds.includes(q.id))
+    );
+    localStorage.setItem('local_user_questions', JSON.stringify(filtered));
     return;
   }
-  await supabase
-    .from('user_collection_items')
-    .delete()
-    .eq('collection_id', collectionId)
-    .in('question_id', questionIds);
+  await supabase.from('user_questions').delete().in('id', questionIds);
+}
+
+// localStorage の user_questions を取得（クイズページから参照）
+export function getLocalUserQuestionsByIds(ids: number[]): LocalUserQuestion[] {
+  const all = getLocalUserQuestions();
+  const idSet = new Set(ids);
+  return all.filter((q) => idSet.has(q.id));
+}
+
+export function getLocalCollectionQuestions(collectionId: number): LocalUserQuestion[] {
+  return getLocalUserQuestions()
+    .filter((q) => q.collection_id === collectionId)
+    .sort((a, b) => a.question_number - b.question_number);
 }
 
 export async function deleteCollection(user: User | null, collectionId: number): Promise<void> {
@@ -157,6 +439,7 @@ type ProgressData = {
   currentIndex: number;
   results: { questionId: number; correct: boolean; selectedChoiceId?: number | null; selectedChoiceIds?: number[]; textInput?: string }[];
   totalItems: number;
+  totalQuestions?: number; // グループ内サブ問題を個別にカウントした総問題数
   examTitle?: string;
   collectionId?: number;
   examId?: string; // コレクション中断データのルーティング用
@@ -195,7 +478,7 @@ export async function getProgress(
 
   const { data: answers } = await supabase
     .from('user_answers')
-    .select('question_id, is_correct, selected_choice_ids, user_input')
+    .select('question_id, user_question_id, is_correct, selected_choice_ids, user_input')
     .eq('session_id', session.id);
 
   return {
@@ -206,8 +489,9 @@ export async function getProgress(
     currentIndex: session.current_question_order,
     results: (answers || []).map((a) => {
       const choiceIds: number[] = a.selected_choice_ids || [];
+      const questionId = a.user_question_id ? Number(a.user_question_id) : a.question_id;
       return {
-        questionId: a.question_id,
+        questionId,
         correct: a.is_correct,
         selectedChoiceId: choiceIds.length > 0 ? choiceIds[0] : null,
         selectedChoiceIds: choiceIds,
@@ -255,13 +539,14 @@ export async function saveProgress(
     retry: 'retry_wrong',
     continue: 'normal',
     collection: 'normal',
+    user_collection: 'normal',
   };
 
   const { data: session, error } = await supabase
     .from('sessions')
     .insert({
       user_id: user.id,
-      exam_id: Number(examId),
+      exam_id: examId === '0' ? null : Number(examId),
       section_id: data.sectionId ? Number(data.sectionId) : null,
       mode: modeMap[data.mode] || 'normal',
       status: 'in_progress',
@@ -283,9 +568,11 @@ export async function saveProgress(
           : r.selectedChoiceId != null
           ? [r.selectedChoiceId]
           : null;
+      const isCollectionMode = !!data.collectionId;
       return {
         session_id: session.id,
-        question_id: r.questionId,
+        question_id: isCollectionMode ? null : r.questionId,
+        user_question_id: isCollectionMode ? r.questionId : null,
         is_correct: r.correct,
         selected_choice_ids: choiceIds,
         user_input: r.textInput || null,
@@ -364,6 +651,27 @@ export function saveRetryIds(examId: string, ids: number[]): void {
 }
 
 // ============================================
+// 中断進捗ヒント（再開画面の (x/n問) 表示用）
+// ログイン済みでも同デバイスなら localStorage から取得できる
+// ============================================
+function progressHintKey(examId: string, collectionId?: number): string {
+  return collectionId ? `progress_hint_col_${collectionId}` : `progress_hint_exam_${examId}`;
+}
+export function saveProgressHint(examId: string, collectionId: number | undefined, currentQuestionNum: number, totalQuestions: number): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(progressHintKey(examId, collectionId), JSON.stringify({ currentQuestionNum, totalQuestions }));
+}
+export function getProgressHint(examId: string, collectionId?: number): { currentQuestionNum: number; totalQuestions: number } | null {
+  if (typeof window === 'undefined') return null;
+  const saved = localStorage.getItem(progressHintKey(examId, collectionId));
+  return saved ? JSON.parse(saved) : null;
+}
+export function clearProgressHint(examId: string, collectionId?: number): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(progressHintKey(examId, collectionId));
+}
+
+// ============================================
 // 結果画面からの解答確認（review モード用）
 // ============================================
 export type ReviewState = {
@@ -371,7 +679,8 @@ export type ReviewState = {
   groupIds: number[];
   results: { questionId: number; correct: boolean; selectedChoiceId?: number | null; selectedChoiceIds?: number[]; textInput?: string }[];
   collectionTitle?: string;
-  restartUrl?: string; // 「はじめから」で使う元の出題 URL
+  restartUrl?: string;
+  collectionId?: number; // user_collection の review 時に使用
 };
 
 export function saveReviewState(examId: string, state: ReviewState): void {
