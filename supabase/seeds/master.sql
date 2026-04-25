@@ -9,7 +9,8 @@ INSERT INTO exams OVERRIDING SYSTEM VALUE VALUES
   (2, 'TOEIC L&R',             '語学系', '英語のリスニング・リーディング能力を測定する国際的な試験。',               now()),
   (3, 'SPI試験',               '就職',   '就職活動で広く使用される適性検査。言語・非言語の2分野で構成される。',       now()),
   (4, 'TOEIC L&R【単語集】',          '語学系', 'TOEICに頻出の英単語を初級・中級・上級の3レベルに分類した単語練習集。',    now()),
-  (5, '基本情報技術者試験【用語集】', 'IT系', '基本情報技術者試験に頻出のIT用語を分野別に分類した用語練習集。',             now());
+  (5, '基本情報技術者試験【用語集】', 'IT系', '基本情報技術者試験に頻出のIT用語を分野別に分類した用語練習集。',             now()),
+  (6, 'プログラミング言語【python】', 'IT系', 'Pythonの基礎文法・組み込み関数・標準ライブラリを穴埋め形式で練習する問題集。',  now());
 
 -- 列順: (id, exam_id, parent_section_id, title, order_index, pass_threshold, question_count, shuffle_choices)
 -- question_count = 本番の試験で出題される問題数（表示用）。NULL のセクションは分野選択画面に表示されない
@@ -63,7 +64,10 @@ INSERT INTO exam_sections OVERRIDING SYSTEM VALUE VALUES
   (36, 5, NULL, '技術戦略マネジメント',         20, NULL,  40, TRUE),
   (37, 5, NULL, 'ビジネスインダストリ',         21, NULL, 178, TRUE),
   (38, 5, NULL, '企業活動',                     22, NULL, 247, TRUE),
-  (39, 5, NULL, '法務',                         23, NULL, 216, TRUE);
+  (39, 5, NULL, '法務',                         23, NULL, 216, TRUE),
+
+  -- プログラミング言語【python】
+  (40, 6, NULL, 'Python基礎',                   1,  NULL, 109, TRUE);
 
 -- OVERRIDING SYSTEM VALUE で挿入したテーブルのシーケンスをリセット
 -- （questions / choices / question_groups は自動採番のためリセット不要）

@@ -40,6 +40,7 @@ OpenStudy — 資格・就職試験対策 Web アプリ
 | TOEIC L&R                        | 語学系 |
 | TOEIC L&R【単語集】              | 語学系 |
 | SPI 試験                         | 就職   |
+| プログラミング言語【python】     | IT系   |
 
 **主な機能**
 
