@@ -37,10 +37,10 @@ OpenStudy — 資格・就職試験対策 Web アプリ
 | -------------------------------- | ------ |
 | 基本情報技術者試験               | IT系   |
 | 基本情報技術者試験【用語集】     | IT系   |
+| プログラミング言語【python】     | IT系   |
+| SPI 試験                         | 就職   |
 | TOEIC L&R                        | 語学系 |
 | TOEIC L&R【単語集】              | 語学系 |
-| SPI 試験                         | 就職   |
-| プログラミング言語【python】     | IT系   |
 
 **主な機能**
 
@@ -81,6 +81,7 @@ OpenStudy — 資格・就職試験対策 Web アプリ
 ❯ tree -a -I "node_modules|.next|.git" -L 3
 .
 ├── app/                          # Next.js App Router ページ
+│   ├── bookmarks/                # ブックマーク一覧・検索
 │   ├── collections/              # 自分の問題集（編集・削除一覧）
 │   │   └── [collectionId]/
 │   │       ├── edit/             # 問題集編集画面（問題・選択肢の追加・修正・削除）
@@ -106,6 +107,7 @@ OpenStudy — 資格・就職試験対策 Web アプリ
 ├── components/                   # 共通 UI コンポーネント
 │   ├── AdOverlay.tsx             # 広告オーバーレイ（クラウド通信中に表示）
 │   ├── BookmarkIcon.tsx
+│   ├── DevBadge.tsx              # 開発中バッジ表示
 │   └── MainNav.tsx               # ボトムナビゲーション
 ├── lib/                          # 共通ロジック・型定義
 │   ├── auth.ts                   # Supabase Auth フック
