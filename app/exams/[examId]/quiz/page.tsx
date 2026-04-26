@@ -1060,10 +1060,14 @@ export default function QuizPage() {
     const sepIdx = normalized.indexOf('\n\n');
     if (sepIdx === -1) return <div className="question-text">{normalized}</div>;
     const prose = normalized.slice(0, sepIdx);
-    const code = normalized.slice(sepIdx + 2);
+    const block = normalized.slice(sepIdx + 2);
+    // 複数行ならコードブロック、1行テキスト（「...」など）は通常テキストとして表示
+    const isCode = block.includes('\n');
     return (<>
       {prose && <div className="question-text">{prose}</div>}
-      <pre className="code-block">{code}</pre>
+      {isCode
+        ? <pre className="code-block">{block}</pre>
+        : <div className="question-text" style={{ whiteSpace: 'pre-wrap' }}>{block}</div>}
     </>);
   }
 

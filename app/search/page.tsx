@@ -44,17 +44,8 @@ export default function SearchPage() {
 
   useEffect(() => {
     async function fetchExams() {
-      const { data, error } = await supabase.from('exams').select('*').order('title');
-      if (!error && data) {
-        const sorted = [...data].sort((a, b) => {
-          const aJ = /^[　-鿿豈-﫿]/.test(a.title);
-          const bJ = /^[　-鿿豈-﫿]/.test(b.title);
-          if (aJ && !bJ) return -1;
-          if (!aJ && bJ) return 1;
-          return a.title.localeCompare(b.title, 'ja');
-        });
-        setExams(sorted);
-      }
+      const { data, error } = await supabase.from('exams').select('*').order('sort_order');
+      if (!error && data) setExams(data);
       setExamsLoading(false);
     }
     fetchExams();
@@ -65,8 +56,8 @@ export default function SearchPage() {
     async function fetchCollections() {
       const data = await getCollections(user);
       const sorted = [...data].sort((a, b) => {
-        const aJ = /^[　-鿿豈-﫿]/.test(a.title);
-        const bJ = /^[　-鿿豈-﫿]/.test(b.title);
+        const aJ = /^[぀-ヿ一-鿿]/.test(a.title);
+        const bJ = /^[぀-ヿ一-鿿]/.test(b.title);
         if (aJ && !bJ) return -1;
         if (!aJ && bJ) return 1;
         return a.title.localeCompare(b.title, 'ja');

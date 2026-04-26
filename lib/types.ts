@@ -3,6 +3,7 @@ export type Exam = {
   title: string;
   category: string;
   description: string | null;
+  sort_order: number;
 };
 
 export type ExamSection = {

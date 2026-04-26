@@ -1,12 +1,12 @@
 -- ============================================
 -- プログラミング言語【python】
--- section_id: 40=Python基礎
+-- section_id: 40=基礎文法
 --
 -- 問題を追加するときはこのファイルの末尾に追記する
 -- ============================================
 
 -- ----------------------------------------
--- Python基礎（section_id=40）Q1〜Q109
+-- 基礎文法（section_id=40）Q1〜Q109
 -- ----------------------------------------
 
 -- Python-1: 文字列型
@@ -603,7 +603,7 @@ INSERT INTO questions
 VALUES
   (40, NULL, 43, 'choice', 1, 1,
    E'【入力】\nstrs = ''Hello, World''\nx = _____\n# '',''で区切ってリストにする\nprint(x)\n【出力】\n[''Hello'', '' World'']',
-   '','で区切ってリストにする。正解: strs.split('','')',
+   ''',''で区切ってリストにする。正解: strs.split('','')',
    NULL, NULL, NULL);
 INSERT INTO choices (question_id, choice_text, image_url, is_correct) VALUES
   (currval('questions_id_seq'), 'strs.split('','')',    NULL, true),
@@ -617,7 +617,7 @@ INSERT INTO questions
 VALUES
   (40, NULL, 44, 'choice', 1, 1,
    E'【入力】\nlists = [''Hello'', '' World'']\nx = _____\n# リストの要素を'',''区切りで文字列に変換する\nprint(x)\n【出力】\nHello, World',
-   'リストの要素を','区切りで文字列に変換する。正解: '',''.join(lists)',
+   'リストの要素を'',''区切りで文字列に変換する。正解: '',''.join(lists)',
    NULL, NULL, NULL);
 INSERT INTO choices (question_id, choice_text, image_url, is_correct) VALUES
   (currval('questions_id_seq'), ''',''.join(lists)',    NULL, true),
@@ -882,7 +882,7 @@ INSERT INTO questions
   (section_id, group_id, question_number, question_type, max_selections, score, body_text, explanation, audio_url, image_url, correct_answers)
 VALUES
   (40, NULL, 63, 'choice', 1, 1,
-   E'【入力】\nx = 3.14\nif type(x) == int:\n    print(''<class \''int\''>'')\nelif type(x) == float:\n    print(''<class \''float\''>'')\n_____\n    print(''<class \''str\''>'')\n# 上記以外の場合の処理\n【出力】\n<class ''float''>',
+   E'【入力】\nx = 3.14\nif type(x) == int:\n    print(''<class \\''int\\''>'')\nelif type(x) == float:\n    print(''<class \\''float\\''>'')\n_____\n    print(''<class \\''str\\''>'')\n# 上記以外の場合の処理\n【出力】\n<class ''float''>',
    '上記以外の場合の処理。正解: else:',
    NULL, NULL, NULL);
 INSERT INTO choices (question_id, choice_text, image_url, is_correct) VALUES
